@@ -2,7 +2,6 @@ import type { Metadata } from 'next';
 import { AntdRegistry } from '@ant-design/nextjs-registry';
 import { ConfigProvider, App } from 'antd';
 import './globals.css';
-import { startEquityScheduler } from '@/lib/scheduler';
 
 export const metadata: Metadata = {
   title: 'Quant AI',
@@ -17,8 +16,14 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  // 启动服务器端自动采集调度器（仅初始化一次）
-  startEquityScheduler();
+  // 在 Node 运行时异步启动调度器（动态导入，避免 Edge 构建引入 Node 依赖）
+  if (typeof window === 'undefined') {
+    import('@/lib/scheduler')
+      .then((m) => m.startEquityScheduler())
+      .catch((e) => {
+        console.error('[layout] failed to start equity scheduler', e);
+      });
+  }
   return (
     <html lang="zh">
       <body>
@@ -35,3 +40,9 @@ export default function RootLayout({
     </html>
   );
 }
+
+/**
+ * 声明运行时为 Node（可选）
+ * @remarks 布局不再直接依赖 Node 模块，但此处声明有助于统一服务端环境。
+ */
+export const runtime = 'nodejs';

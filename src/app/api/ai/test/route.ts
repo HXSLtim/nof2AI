@@ -14,9 +14,32 @@ import { NextRequest, NextResponse } from 'next/server';
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
-    const baseUrl: string | undefined = body.baseUrl ?? process.env.AI_SERVICE_URL;
-    const apiKey: string | undefined = body.apiKey ?? process.env.AI_API_KEY;
-    const model: string | undefined = body.model ?? process.env.AI_MODEL_ID ?? 'deepseek-chat';
+    /**
+     * 读取 Base URL / API Key / Model（兼容多种环境变量名）
+     * @remarks 优先使用请求体，其次在以下变量中依次回退：
+     * - Base URL: AI_SERVICE_URL | OPENAI_BASE_URL | OPENAI_API_HOST | DEEPSEEK_API_BASE | AZURE_OPENAI_ENDPOINT
+     * - API Key : AI_API_KEY | OPENAI_API_KEY | DEEPSEEK_API_KEY | AZURE_OPENAI_API_KEY
+     * - Model   : AI_MODEL_ID | OPENAI_MODEL_NAME | DEEPSEEK_MODEL_ID | AZURE_OPENAI_DEPLOYMENT
+     */
+    const baseUrl: string | undefined = body.baseUrl
+      ?? process.env.AI_SERVICE_URL
+      ?? process.env.OPENAI_BASE_URL
+      ?? process.env.OPENAI_API_HOST
+      ?? process.env.DEEPSEEK_API_BASE
+      ?? process.env.AZURE_OPENAI_ENDPOINT;
+
+    const apiKey: string | undefined = body.apiKey
+      ?? process.env.AI_API_KEY
+      ?? process.env.OPENAI_API_KEY
+      ?? process.env.DEEPSEEK_API_KEY
+      ?? process.env.AZURE_OPENAI_API_KEY;
+
+    const model: string | undefined = body.model
+      ?? process.env.AI_MODEL_ID
+      ?? process.env.OPENAI_MODEL_NAME
+      ?? process.env.DEEPSEEK_MODEL_ID
+      ?? process.env.AZURE_OPENAI_DEPLOYMENT
+      ?? 'deepseek-chat';
 
     if (!baseUrl) throw new Error('缺少 Base URL（请在请求或 .env 中设置 AI_SERVICE_URL）');
 
@@ -38,9 +61,23 @@ export async function POST(req: NextRequest) {
  * @returns `{ ok: true, info: { baseUrl, model, hasKey } }`；不返回密钥明文
  */
 export async function GET() {
-  const baseUrl = process.env.AI_SERVICE_URL;
-  const apiKey = process.env.AI_API_KEY;
-  const model = process.env.AI_MODEL_ID ?? 'deepseek-chat';
+  /**
+   * 读取环境变量（支持多种常用变量名）
+   */
+  const baseUrl = process.env.AI_SERVICE_URL
+    ?? process.env.OPENAI_BASE_URL
+    ?? process.env.OPENAI_API_HOST
+    ?? process.env.DEEPSEEK_API_BASE
+    ?? process.env.AZURE_OPENAI_ENDPOINT;
+  const apiKey = process.env.AI_API_KEY
+    ?? process.env.OPENAI_API_KEY
+    ?? process.env.DEEPSEEK_API_KEY
+    ?? process.env.AZURE_OPENAI_API_KEY;
+  const model = process.env.AI_MODEL_ID
+    ?? process.env.OPENAI_MODEL_NAME
+    ?? process.env.DEEPSEEK_MODEL_ID
+    ?? process.env.AZURE_OPENAI_DEPLOYMENT
+    ?? 'deepseek-chat';
   const info = {
     baseUrl: baseUrl ? (() => { try { return new URL(baseUrl).origin; } catch { return baseUrl; } })() : undefined,
     model,

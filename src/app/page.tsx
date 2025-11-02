@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Layout, Typography, Space, Form, Input, Switch, Button, Modal, Divider, App, Card, Row, Col, Grid, Select, Tabs
 } from 'antd';
@@ -10,7 +10,11 @@ import EquityChart from './components/EquityChart';
 import AIChat from './components/AIChat';
 import AIDecisions from './components/AIDecisions';
 
-const { Header, Content, Footer } = Layout;
+/**
+ * 页面布局使用 Header 与 Content，移除 Footer
+ * @remarks 按需求去掉底部 fooster/footer 区域，避免多余占位。
+ */
+const { Header, Content } = Layout;
 const { Title, Paragraph } = Typography;
 
 /**
@@ -68,24 +72,66 @@ export default function HomePage() {
   };
 
   /**
+   * 读取环境变量并填充设置表单
+   * @remarks 调用 GET /api/ai/test，若检测到 env 中存在配置则填充 baseUrl 与 model；密钥仅提示存在，不回显具体值。
+   */
+  const loadAIEnv = async () => {
+    try {
+      const res = await fetch('/api/ai/test', { method: 'GET', cache: 'no-store' });
+      const json = await res.json();
+      if (json?.ok && json?.info) {
+        const { baseUrl, model, hasKey } = json.info;
+        aiForm.setFieldsValue({ baseUrl, model });
+        if (hasKey) message.info('已检测到环境变量中的 API Key');
+      }
+    } catch {
+      // 静默失败，不影响表单手动填写
+    }
+  };
+
+  /**
+   * 打开设置弹窗时自动拉取环境配置
+   */
+  useEffect(() => {
+    if (open) loadAIEnv();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  /**
    * 右栏标签页配置：仓位 / AI 聊天 / AI 决策
    * @remarks Tabs 使用高度 100%，每个子面板容器采用高度 100% 的列式布局。
+   */
+  /**
+   * 右栏标签页配置：仓位 / AI 聊天 / AI 决策
+   * @remarks 为每个面板提供可滚动的内容容器：使用 flex: 1 + minHeight: 0，让子组件（如 AIChat 列表）能够出现滚动条而不是撑开父容器。
    */
   const tabItems = [
     {
       key: 'positions',
       label: '仓位',
-      children: <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}><Positions /></div>
+      /**
+       * 面板容器：启用内容滚动
+       * @remarks 关键点：flex: 1 + minHeight: 0，让内部 overflow 生效。
+       */
+      children: <div style={{ height: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}><Positions /></div>
     },
     {
       key: 'ai-chat',
       label: 'AI 聊天',
-      children: <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}><AIChat /></div>
+      /**
+       * AI 回复区域：启用滚动容器
+       * @remarks 使 AI 聊天消息列表在内容超出时出现纵向滚动条。
+       */
+      children: <div style={{ height: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}><AIChat /></div>
     },
     {
       key: 'ai-decisions',
       label: 'AI 决策',
-      children: <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}><AIDecisions /></div>
+      /**
+       * 决策面板：启用滚动容器
+       * @remarks 使决策列表在内容超出时出现纵向滚动条。
+       */
+      children: <div style={{ height: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}><AIDecisions /></div>
     },
   ];
 
@@ -116,15 +162,22 @@ export default function HomePage() {
       <Content
         /**
          * 主体区域填满剩余视口高度，确保子容器可使用 height: 100%。
+         * 恢复左右 padding 以提供父级布局留白（小屏 12px，大屏 24px）。
+         * @remarks 恢复父组件留白：Content 横向 padding 回归常规值
          */
-        style={{ padding: screens.md ? '6vh 24px' : '3vh 16px', margin: '0 auto', width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}
+        style={{ padding: screens.md ? '6vh 24px' : '3vh 12px', margin: '0 auto', width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}
       >
-        <Row gutter={[screens.md ? 24 : 12, screens.md ? 24 : 12]} style={{ height: '100%' }}>
+        {/**
+         * 恢复水平 gutter（24），让左右列具有一致的内边距与间距。
+         * @remarks 恢复父组件留白：Row 横向 gutter 设置为 24
+         */}
+        <Row gutter={[24, screens.md ? 24 : 12]} style={{ height: '100%' }}>
           <Col xs={24} md={16} style={{ height: '100%' }}>
             {/**
-             * 左侧容器改为列式 flex，让子卡片可用 flex:1 撑满高度。
+             * 恢复 Space 包裹用于统一留白与纵向间距，同时保持图表自身贴边策略。
+             * @remarks 父级留白：使用 Space 作为图表外层留白容器
              */}
-            <Space direction="vertical" size="large" style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
+            <Space direction="vertical" size={screens.md ? 24 : 12} style={{ width: '100%' }}>
               <EquityChart />
             </Space>
           </Col>
@@ -133,11 +186,19 @@ export default function HomePage() {
               /**
                * 右侧卡片改为标签页容器：仓位 / AI 聊天 / AI 决策
                */
+              /**
+               * 启用内部滚动：父层需设置 minHeight: 0，避免子层内容撑开导致滚动失效。
+               * @remarks 卡片 body 使用 flex: 1 + minHeight: 0，Tabs 使用 flex: 1 以撑满。
+               */
               style={{ background: '#0f1116', border: '1px solid #1a1d26', height: '100%', display: 'flex', flexDirection: 'column' }}
-              styles={{ header: { borderBottom: '1px solid #1a1d26' }, body: { flex: 1, display: 'flex', flexDirection: 'column' } }}
+              styles={{ header: { borderBottom: '1px solid #1a1d26' }, body: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } }}
               title={<span style={{ color: '#00e676' }}>面板</span>}
             >
-              <Tabs defaultActiveKey="positions" items={tabItems} style={{ height: '100%' }} />
+              {/**
+               * Tabs 内容区域滚动
+               * @remarks 使用 flex: 1 + minHeight: 0，使内部 children 的 overflowY 能够生效显示滚动条。
+               */}
+              <Tabs defaultActiveKey="positions" items={tabItems} style={{ height: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }} />
             </Card>
           </Col>
         </Row>
@@ -221,9 +282,10 @@ export default function HomePage() {
         </div>
       </Modal>
 
-      <Footer style={{ textAlign: 'center', background: 'transparent', color: '#6b7280', fontSize: 12 }}>
-        ©{new Date().getFullYear()} Quant AI
-      </Footer>
+      {/**
+       * Footer 已移除
+       * @remarks 如需恢复版权信息可在此处重新添加。
+       */}
     </Layout>
   );
 }

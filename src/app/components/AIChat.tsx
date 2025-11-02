@@ -18,7 +18,15 @@ export default function AIChat() {
    * @property ts 时间戳（毫秒）
    * @property isPrompt 是否为“用户提示词”（自动/手动生成的长提示词）
    */
-  type Msg = { role: 'user' | 'assistant'; content: string; ts: number; isPrompt?: boolean };
+  /**
+   * 消息结构
+   * @property role 角色：'user' | 'assistant'
+   * @property content 文本内容
+   * @property ts 时间戳（毫秒）
+   * @property isPrompt 是否为“用户提示词”（自动/手动生成的长提示词）
+   * @property collapsed 单条提示词折叠状态（仅对 isPrompt 生效）；未设置时跟随全局开关
+   */
+  type Msg = { role: 'user' | 'assistant'; content: string; ts: number; isPrompt?: boolean; collapsed?: boolean };
   const [messages, setMessages] = useState<Msg[]>([]);
   const [text, setText] = useState('');
   /** 自动询问开关（默认开启） */
@@ -53,6 +61,8 @@ export default function AIChat() {
   });
   /** 定时器引用，避免多次注册 */
   const timerRef = useRef<any>(null);
+  /** AI 请求的并发控制（避免重复发送） */
+  const aiAbortRef = useRef<AbortController | null>(null);
 
   /**
    * 模板后缀（静态说明与占位数据）
@@ -245,9 +255,12 @@ RSI indicators (14‑Period): [29.663, 40.151, 42.668, 47.305, 44.218, 43.242, 4
     if (!t) return;
     const now = Date.now();
     const next: Msg[] = [...messages, { role: 'user', content: t, ts: now, isPrompt: false }];
-    // 本地模拟助手回覆
-    next.push({ role: 'assistant', content: '收到：' + t, ts: now + 1, isPrompt: false });
     setMessages(next);
+    // 真实调用 AI 服务获取回复
+    (async () => {
+      const reply = await callAI(next);
+      setMessages((arr) => [...arr, { role: 'assistant', content: reply, ts: Date.now() + 1, isPrompt: false }]);
+    })();
     setText('');
   };
 
@@ -261,7 +274,23 @@ RSI indicators (14‑Period): [29.663, 40.151, 42.668, 47.305, 44.218, 43.242, 4
     const invokes = invocations + 1;
     const suffix = await generatePrompt();
     const content = composeAutoPrompt(minutes, currentTime, invokes, suffix);
-    setMessages((arr) => [...arr, { role: 'user', content, ts: now, isPrompt: true }, { role: 'assistant', content: '提示词已生成并发送（占位回复，待接入 AI 推理）。', ts: now + 1, isPrompt: false }]);
+    /**
+     * 单条提示词初始折叠状态：默认跟随全局（promptExpanded）
+     * @remarks 当 promptExpanded 为 false（收起），则新提示词 collapsed 设为 true；反之为 false。
+     */
+    setMessages((arr) => [
+      ...arr,
+      { role: 'user', content, ts: now, isPrompt: true, collapsed: !promptExpanded },
+      { role: 'assistant', content: '提示词已生成并发送（占位回复，待接入 AI 推理）。', ts: now + 1, isPrompt: false }
+    ]);
+    // 真实调用 AI 服务获取回复（基于完整提示词）
+    (async () => {
+      const reply = await callAI([
+        ...messages,
+        { role: 'user', content, ts: now, isPrompt: true, collapsed: !promptExpanded }
+      ]);
+      setMessages((arr) => [...arr, { role: 'assistant', content: reply, ts: Date.now() + 1, isPrompt: false }]);
+    })();
     setInvocations(invokes);
     if (typeof window !== 'undefined') localStorage.setItem('ai_chat_auto_invocations', String(invokes));
   };
@@ -285,7 +314,11 @@ RSI indicators (14‑Period): [29.663, 40.151, 42.668, 47.305, 44.218, 43.242, 4
           const invokes = invocations + 1;
           const suffix = await generatePrompt();
           const content = composeAutoPrompt(minutes, currentTime, invokes, suffix);
-          setMessages((arr) => [...arr, { role: 'user', content, ts: now, isPrompt: true }, { role: 'assistant', content: '提示词已生成并发送（占位回复，待接入 AI 推理）。', ts: now + 1, isPrompt: false }]);
+          // 追加用户提示词并请求 AI 回复
+          const nextUser: Msg = { role: 'user', content, ts: now, isPrompt: true, collapsed: !promptExpanded };
+          setMessages((arr) => [...arr, nextUser]);
+          const reply = await callAI([...messages, nextUser]);
+          setMessages((arr) => [...arr, { role: 'assistant', content: reply, ts: Date.now() + 1, isPrompt: false }]);
           setInvocations(invokes);
           if (typeof window !== 'undefined') localStorage.setItem('ai_chat_auto_invocations', String(invokes));
         })();
@@ -317,6 +350,46 @@ RSI indicators (14‑Period): [29.663, 40.151, 42.668, 47.305, 44.218, 43.242, 4
     if (typeof window !== 'undefined') localStorage.setItem('ai_chat_prompt_expanded', String(next));
   };
 
+  /**
+   * 切换单条提示词的折叠状态
+   * @param ts 消息时间戳（作为本地唯一键）
+   * @remarks 若消息未设置 collapsed，则以当前全局折叠状态（!promptExpanded）为默认值后取反；保留全局开关以控制未单独设置的消息。
+   */
+  const toggleOnePrompt = (ts: number) => {
+    setMessages((arr) => arr.map((m) => {
+      if (m.ts !== ts || !(m.role === 'user' && m.isPrompt)) return m;
+      const current = m.collapsed ?? !promptExpanded;
+      return { ...m, collapsed: !current };
+    }));
+  };
+
+  /**
+   * 调用后端 AI 聊天接口，返回助手文本
+   * @param conv 当前会话（含新加入的用户消息）
+   * @returns 助手回复文本；失败时返回错误占位提示
+   * @remarks 使用 AbortController 防止并发请求堆积；后端路由为 `/api/ai/chat`。
+   */
+  const callAI = async (conv: Msg[]): Promise<string> => {
+    try {
+      const payload = conv.map((m) => ({ role: m.role, content: m.content }));
+      aiAbortRef.current?.abort();
+      const ac = new AbortController();
+      aiAbortRef.current = ac;
+      const res = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: payload }),
+        signal: ac.signal,
+      });
+      const json = await res.json();
+      if (res.ok && json?.ok && json?.content) return String(json.content);
+      throw new Error(json?.error || 'AI 聊天失败');
+    } catch (e: any) {
+      if (e?.name === 'AbortError') return '（本次请求已取消）';
+      return `（AI 回复失败：${e?.message || '未知错误'}）`;
+    }
+  };
+
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 8 }}>
       <Space align="center" style={{ justifyContent: 'space-between' }}>
@@ -340,10 +413,27 @@ RSI indicators (14‑Period): [29.663, 40.151, 42.668, 47.305, 44.218, 43.242, 4
               renderItem={(m) => (
                 <List.Item style={{ borderBlockEnd: '1px solid #1a1d26' }}>
                   <Space direction="vertical" style={{ width: '100%' }} size={4}>
-                    {m.role === 'user' && m.isPrompt && !promptExpanded ? (
-                      <Text style={{ color: '#00e676' }}>
-                        我（提示词，已折叠）：{m.content.split('\n')[0]} ...
-                      </Text>
+                    {m.role === 'user' && m.isPrompt ? (
+                      <>
+                        {/**
+                         * 单条提示词折叠优先：m.collapsed 未设置时跟随全局 !promptExpanded
+                         * @remarks 提供“展开此提示词/折叠此提示词”单条开关，同时保留顶部的全局折叠开关。
+                         */}
+                        <Space align="center" style={{ justifyContent: 'space-between' }}>
+                          {(m.collapsed ?? !promptExpanded) ? (
+                            <Text style={{ color: '#00e676' }}>
+                              我（提示词，已折叠）：{m.content.split('\n')[0]} ...
+                            </Text>
+                          ) : (
+                            <Text style={{ color: '#00e676', whiteSpace: 'pre-wrap' }}>
+                              我（提示词）：{m.content}
+                            </Text>
+                          )}
+                          <Button size="small" type="link" onClick={() => toggleOnePrompt(m.ts)}>
+                            {(m.collapsed ?? !promptExpanded) ? '展开此提示词' : '折叠此提示词'}
+                          </Button>
+                        </Space>
+                      </>
                     ) : (
                       <Text style={{ color: m.role === 'user' ? '#00e676' : '#a1a9b7', whiteSpace: 'pre-wrap' }}>
                         {m.role === 'user' ? '我' : 'AI'}：{m.content}
