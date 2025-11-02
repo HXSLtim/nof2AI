@@ -9,17 +9,23 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "react": "19.2.0",
-    "react-dom": "19.2.0",
-    "next": "16.0.1"
+    "@ant-design/nextjs-registry": "^1.2.0",
+    "antd": "^5.28.0",
+    "better-sqlite3": "^12.4.1",
+    "ccxt": "^4.5.14",
+    "next": "16.0.1",
+    "protobufjs": "^7.5.4",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
-    "babel-plugin-react-compiler": "1.0.0",
-    "typescript": "^5",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "babel-plugin-react-compiler": "1.0.0",
     "eslint": "^9",
-    "eslint-config-next": "16.0.1"
+    "eslint-config-next": "16.0.1",
+    "typescript": "^5"
   }
 }
