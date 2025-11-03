@@ -35,8 +35,18 @@ export async function POST(req: NextRequest) {
 
     console.log('[execute-decision] 账户信息:', {
       总资产: accountTotal,
-      可用资金: availableCash
+      可用资金: availableCash,
+      币种: decision.symbol,
+      操作: decision.action
     });
+    
+    // 检查是否有足够资金
+    if (availableCash < 10) {
+      return NextResponse.json({ 
+        success: false, 
+        error: `账户可用资金不足（仅$${availableCash.toFixed(2)}）。请充值或等待现有仓位平仓释放资金。` 
+      }, { status: 400 });
+    }
 
     // 智能计算订单金额：系统自动计算，确保至少1张合约
     const leverage = decision.leverage || 5; // 默认5x杠杆
@@ -104,11 +114,18 @@ export async function POST(req: NextRequest) {
       console.log(`[execute-decision] 订单金额超限，限制为${decision.symbol}最大值: $${maxOrderForSymbol}`);
     }
     
+    // 严格检查：不超过可用资金的90%（留10%buffer）
+    const maxUsableCash = availableCash * 0.9;
+    if (orderValue > maxUsableCash) {
+      orderValue = maxUsableCash;
+      console.log(`[execute-decision] 订单金额超过可用资金90%，限制为: $${orderValue.toFixed(2)}`);
+    }
+    
     // 检查可用资金是否足够
     if (availableCash < usdtFor1Contract) {
       return NextResponse.json({ 
         success: false, 
-        error: `可用资金$${availableCash.toFixed(2)}不足以购买1张${decision.symbol}合约（需要至少$${usdtFor1Contract.toFixed(2)}）` 
+        error: `可用资金$${availableCash.toFixed(2)}不足以购买1张${decision.symbol}合约（需要至少$${usdtFor1Contract.toFixed(2)}）。建议：等待现有仓位平仓释放资金，或充值。` 
       }, { status: 400 });
     }
     
@@ -117,6 +134,17 @@ export async function POST(req: NextRequest) {
       orderValue = usdtFor1Contract;
       console.log(`[execute-decision] 订单金额调整为最小值: $${orderValue.toFixed(2)}`);
     }
+    
+    // 最后验证：订单金额不能超过可用资金
+    if (orderValue > availableCash) {
+      return NextResponse.json({ 
+        success: false, 
+        error: `订单金额$${orderValue.toFixed(2)}超过可用资金$${availableCash.toFixed(2)}。请等待现有仓位平仓或充值。` 
+      }, { status: 400 });
+    }
+    
+    console.log(`[execute-decision] 最终订单金额: $${orderValue.toFixed(2)} (可用资金: $${availableCash.toFixed(2)})`);
+
 
     // 构建交易对（OKX格式：BTC/USDT:USDT）
     const symbol = `${decision.symbol}/USDT:USDT`;

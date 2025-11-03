@@ -1,53 +1,59 @@
-# nof2AI - AI量化交易系统
+# nof2AI - AI 量化交易系统
 
 ⚠️ **重要免责声明：本系统仅供学习和研究使用，不构成任何投资建议。交易有风险，投资需谨慎。**
 
 ## 📋 免责声明
 
 **风险提示：**
+
 - 数字货币交易具有极高风险，可能导致部分或全部资金损失
-- 本系统基于AI算法进行交易决策，不保证盈利
+- 本系统基于 AI 算法进行交易决策，不保证盈利
 - 过往业绩不代表未来表现
 - 请在充分了解风险的前提下使用本系统
 
 **责任限制：**
+
 - 本系统仅供教育和研究目的使用
 - 开发者不对使用本系统造成的任何损失承担责任
 - 用户应自行承担所有交易风险和责任
 - 在实盘交易前，请务必在沙盒环境中充分测试
 
 **合规声明：**
+
 - 请确保使用本系统符合当地法律法规
 - 用户需要自行负责税务申报和合规事宜
 - 本系统不提供任何财务建议或投资建议
 
 ## 🎯 项目简介
 
-这是一个使用 [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app) 创建的 [Next.js](https://nextjs.org) AI量化交易系统，专用于OKX交易所的永续合约交易。
+这是一个使用 [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app) 创建的 [Next.js](https://nextjs.org) AI 量化交易系统，专用于 OKX 交易所的永续合约交易。
 
-## 🤖 AI交易架构
+## 🤖 AI 交易架构
 
 ### 核心提示词系统
 
-本系统采用基于大语言模型的AI决策架构，通过结构化的提示词生成交易决策：
+本系统采用基于大语言模型的 AI 决策架构，通过结构化的提示词生成交易决策：
 
 #### 📊 数据输入架构
 
-AI模型接收以下三层数据结构：
+AI 模型接收以下三层数据结构：
 
 **1. 当前市场状态**
+
 - 实时价格数据（BTC、ETH、SOL、BNB、XRP、DOGE）
-- 3分钟K线技术指标（EMA20、MACD、RSI7/14）
-- 4小时趋势指标（EMA20/50、ATR、成交量、MACD、RSI14）
+- 3 分钟 K 线技术指标（EMA20、MACD、RSI7/14）
+- 4 小时趋势指标（EMA20/50、ATR、成交量、MACD、RSI14）
 - 资金费率和持仓量数据
 
 **2. 仓位信息**
-- 实际持仓状态（来自OKX交易所）
-- 活跃的AI决策历史
+
+- 实际持仓状态（来自 OKX 交易所）
+- 活跃的 AI 决策历史
 - 未平仓交易的盈亏状态
 - 止盈止损设置情况
 
 **3. 账户绩效**
+
 - 账户总权益变化
 - 可用资金余额
 - 历史收益率统计
@@ -55,9 +61,10 @@ AI模型接收以下三层数据结构：
 
 #### 🎯 决策输出格式
 
-AI必须以严格的JSON格式输出交易决策：
+AI 必须以严格的 JSON 格式输出交易决策：
 
 **单决策格式：**
+
 ```json
 {
   "symbol": "BTC|ETH|SOL|BNB|XRP|DOGE",
@@ -73,6 +80,7 @@ AI必须以严格的JSON格式输出交易决策：
 ```
 
 **多决策格式：**
+
 ```json
 {
   "decisions": [
@@ -85,43 +93,48 @@ AI必须以严格的JSON格式输出交易决策：
 #### 🛡️ 风险控制规则
 
 **开仓条件：**
+
 - 多头：价格 > EMA20，MACD > 0，RSI 50-80，成交量放大
 - 空头：价格 < EMA20，MACD < 0，RSI 20-50，资金费率为正
 - 置信度要求 ≥ 70%
-- 技术指标需强烈对齐（至少3个指标）
+- 技术指标需强烈对齐（至少 3 个指标）
 
 **平仓规则：**
+
 - 盈利目标：净收益 ≥ +5%~15%（根据持仓时间）
 - 止损限制：未实现亏损 ≤ -8%
 - 失效条件：技术设置完全破坏
-- 最短持仓：至少30分钟
+- 最短持仓：至少 30 分钟
 
 #### 📈 技术指标体系
 
-**3分钟级别指标：**
+**3 分钟级别指标：**
+
 - EMA20：短期趋势判断
 - MACD：动量和趋势变化
 - RSI7/14：超买超卖状态
 - 成交量：市场活跃度
 
-**4小时级别指标：**
+**4 小时级别指标：**
+
 - EMA20/50：中长期趋势
 - ATR3/14：波动性分析
 - 成交量均值：量价关系
 - MACD/RSI：趋势确认
 
 **市场情绪指标：**
+
 - 资金费率：多空情绪偏向
 - 持仓量变化：资金流入流出
 - 价格行为：关键位置突破
 
 ### 数据采集流程
 
-1. **实时数据获取**：通过OKX API获取价格、K线、持仓等数据
-2. **技术指标计算**：本地计算EMA、MACD、RSI、ATR等技术指标
+1. **实时数据获取**：通过 OKX API 获取价格、K 线、持仓等数据
+2. **技术指标计算**：本地计算 EMA、MACD、RSI、ATR 等技术指标
 3. **市场情绪分析**：整合资金费率、持仓量等情绪指标
-4. **历史数据存储**：使用SQLite数据库存储历史数据
-5. **提示词生成**：结构化所有数据供AI模型分析
+4. **历史数据存储**：使用 SQLite 数据库存储历史数据
+5. **提示词生成**：结构化所有数据供 AI 模型分析
 
 ## 🚀 快速开始
 
@@ -141,91 +154,62 @@ bun dev
 
 在浏览器中打开 [http://localhost:3000](http://localhost:3000) 查看运行结果。
 
-### API配置
+### API 配置
 
 在项目根目录创建 `.env.local` 文件：
 
-```env
 # OKX API 配置
+
 OKX_API_KEY=your_api_key
 OKX_SECRET=your_api_secret
 OKX_PASSWORD=your_api_password
-OKX_SANDBOX=true  # 开发环境建议设为true
+OKX_SANDBOX=true # 开发环境建议设为 true
 
-# AI服务配置（三选一即可）
-# 方式1：使用通用配置（推荐）
+# AI 服务配置
+
+# 方式 1：使用通用配置（推荐）
+
 AI_SERVICE_URL=https://api.deepseek.com
 AI_API_KEY=your_deepseek_key
 AI_MODEL_ID=deepseek-chat
 
-# 方式2：使用OpenAI配置
-# OPENAI_BASE_URL=https://api.openai.com
-# OPENAI_API_KEY=your_openai_key
-# OPENAI_MODEL_NAME=gpt-4
-
-# 方式3：使用其他兼容OpenAI的服务
-# DEEPSEEK_API_BASE=https://api.deepseek.com
-# DEEPSEEK_API_KEY=your_deepseek_key
-# DEEPSEEK_MODEL_ID=deepseek-chat
-```
-
-#### 支持的AI服务
+#### 支持的 AI 服务
 
 **1. DeepSeek（推荐，性价比高）**
-```env
 AI_SERVICE_URL=https://api.deepseek.com
 AI_API_KEY=sk-xxxxxxxxxx
 AI_MODEL_ID=deepseek-chat
-```
 
-**2. OpenAI**
-```env
-OPENAI_BASE_URL=https://api.openai.com
-OPENAI_API_KEY=sk-xxxxxxxxxx
-OPENAI_MODEL_NAME=gpt-4
-```
-
-**3. Moonshot（月之暗面）**
-```env
-AI_SERVICE_URL=https://api.moonshot.cn
-AI_API_KEY=sk-xxxxxxxxxx
-AI_MODEL_ID=moonshot-v1-8k
-```
-
-**4. Azure OpenAI**
-```env
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
-AZURE_OPENAI_API_KEY=your_azure_key
-AZURE_OPENAI_DEPLOYMENT=your_deployment_name
-```
-
-**5. 其他兼容OpenAI的服务**
-系统支持任何兼容OpenAI API格式的服务，只需配置相应的环境变量即可。
+**5. 其他兼容 OpenAI 的服务**
+系统支持任何兼容 OpenAI API 格式的服务，只需配置相应的环境变量即可。
 
 ### 交易所配置
 
-1. 注册OKX账户并开通API权限
-2. 获取API Key、Secret和Passphrase
+1. 注册 OKX 账户并开通 API 权限
+2. 获取 API Key、Secret 和 Passphrase
 3. 建议先在沙盒环境测试
-4. 配置适当的IP白名单和权限限制
+4. 配置适当的 IP 白名单和权限限制
 
 ## 📚 核心功能
 
-### AI交易系统
-- **智能决策生成**：基于技术指标和市场数据的AI决策
-- **多AI服务兼容**：支持DeepSeek、OpenAI、Moonshot、Azure OpenAI等
-- **统一接口设计**：自动适配不同AI服务商的API格式
+### AI 交易系统
+
+- **智能决策生成**：基于技术指标和市场数据的 AI 决策
+- **多 AI 服务兼容**：支持 DeepSeek、OpenAI、Moonshot、Azure OpenAI 等
+- **统一接口设计**：自动适配不同 AI 服务商的 API 格式
 - **风险自动控制**：止盈止损、仓位管理
 - **实时监控**：账户权益、持仓状态跟踪
 
 ### 数据分析
-- **实时价格监控**：6个主流币种实时跟踪
-- **技术指标计算**：EMA、MACD、RSI、ATR等
+
+- **实时价格监控**：6 个主流币种实时跟踪
+- **技术指标计算**：EMA、MACD、RSI、ATR 等
 - **市场情绪分析**：资金费率、持仓量分析
 - **历史数据回测**：策略表现评估
 
 ### 交易执行
-- **自动下单**：基于AI决策自动执行
+
+- **自动下单**：基于 AI 决策自动执行
 - **杠杆管理**：动态调整杠杆倍数
 - **止盈止损**：自动设置风险管理订单
 - **仓位监控**：实时跟踪持仓状态
@@ -234,22 +218,22 @@ AZURE_OPENAI_DEPLOYMENT=your_deployment_name
 
 - **账户权益图表**：实时显示资金变化
 - **价格滚动显示**：多币种价格实时更新
-- **决策历史展示**：AI决策记录和执行结果
+- **决策历史展示**：AI 决策记录和执行结果
 - **技术分析图表**：指标和趋势可视化
 
 ## ⚙️ 技术架构
 
 - **前端框架**：Next.js 16 (App Router)
-- **UI组件库**：Ant Design 5.28.0
+- **UI 组件库**：Ant Design 5.28.0
 - **数据库**：Better SQLite3
 - **交易所集成**：OKX V5 API (CCXT)
-- **AI服务**：统一兼容OpenAI格式的多AI服务接口
+- **AI 服务**：统一兼容 OpenAI 格式的多 AI 服务接口
 - **开发语言**：TypeScript
 
 ## 🔧 系统特性
 
 - **多环境支持**：沙盒/生产环境切换
-- **高频数据处理**：3分钟级别数据采集
+- **高频数据处理**：3 分钟级别数据采集
 - **智能错误处理**：网络异常自动重试
 - **模块化设计**：易于扩展和维护
 - **实时监控**：系统状态和交易执行监控
