@@ -7,6 +7,53 @@
 - [`CONFIGURATION.md`](../CONFIGURATION.md) - 系统配置说明
 - [`OKX_CONFIG.md`](../OKX_CONFIG.md) - OKX API配置指南
 
+### 📁 系统设计文档
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md) - 🏗️ 系统架构设计
+  - 整体架构和组件设计
+  - 技术栈选型和集成方案
+  - 数据流和安全架构
+  - 部署和监控架构
+
+- [`CODING_STANDARDS.md`](./CODING_STANDARDS.md) - 📋 编码规范和最佳实践
+  - TypeScript编码规范
+  - React/Next.js开发规范
+  - API开发规范
+  - 测试和安全规范
+
+### 📁 开发历程 ([development/](./development/))
+记录项目从初始开发到现在的完整发展历程。
+
+#### 📚 核心历程文档
+- [`DEVELOPMENT_TIMELINE.md`](./development/DEVELOPMENT_TIMELINE.md) - 🚀 项目开发历程
+  - 四个发展阶段完整记录
+  - 技术突破和成果展示
+  - 量化指标提升对比
+  - 未来发展规划
+
+- [`MILESTONES.md`](./development/MILESTONES.md) - 🏆 项目里程碑
+  - 重要时间节点和成就
+  - 关键技术突破记录
+  - 性能提升里程碑
+  - 团队成长记录
+
+- [`TECHNICAL_EVOLUTION.md`](./development/TECHNICAL_EVOLUTION.md) - 🔧 技术发展历程
+  - 技术栈演进过程
+  - 架构设计变迁
+  - 性能优化历程
+  - 安全性增强过程
+
+- [`PROBLEM_SOLVING_JOURNEY.md`](./development/PROBLEM_SOLVING_JOURNEY.md) - 🔧 问题解决历程
+  - 5个关键BUG的详细分析
+  - 根本原因和解决方案
+  - 经验教训总结
+  - 未来预防措施
+
+- [`DOCUMENTATION_JOURNEY.md`](./development/DOCUMENTATION_JOURNEY.md) - 📚 文档体系建设历程
+  - 文档体系从无到有的完整过程
+  - 文档架构的演进和优化
+  - 文档建设的原则和最佳实践
+  - 文档效果评估和未来规划
+
 ### 📁 归档文档 ([archive/](./archive/))
 历史文档和修复记录的集中存储位置。
 

@@ -125,51 +125,31 @@ export async function POST(req: NextRequest) {
     };
     const maxOrderForSymbol = maxOrderLimits[decision.symbol] || 500;
     
-    // 计算1张合约需要多少USDT（含手续费和缓冲）
-    const usdtFor1Contract = (entryPrice / leverage) * 1.06; // 保证金 + 手续费(0.1%) + 5%缓冲
-    // console.log(`[execute-decision] 📊 1张${decision.symbol}合约需要: $${usdtFor1Contract.toFixed(2)} USDT (${leverage}x杠杆)`); // ✅ 屏蔽
-    
-    // ⚠️ 提前检查：如果连1张合约都买不起，直接拒绝
-    if (availableCash < usdtFor1Contract) {
-      console.log(`[execute-decision] ❌ 可用资金不足以购买1张${decision.symbol}合约`);
-      return NextResponse.json({ 
-        success: false, 
-        error: `资金不足：需要至少$${usdtFor1Contract.toFixed(2)} USDT才能开1张${decision.symbol}合约（${leverage}x杠杆），但只有$${availableCash.toFixed(2)} USDT。\n\n建议：\n1. 选择价格更低的币种（如BNB/SOL/XRP/DOGE）\n2. 提高杠杆倍数（风险更大）\n3. 充值更多USDT\n4. 等待现有仓位平仓释放资金` 
-      }, { status: 400 });
-    }
-    
-    // 确定请求的订单金额
+    // 确定请求的订单金额 - 严格按AI指定
     let requestedUSDT = 0;
     
     if (decision.sizeUSDT && decision.sizeUSDT > 0) {
-      // AI指定了金额
+      // AI指定了金额，严格使用（不擅自修改）
       requestedUSDT = decision.sizeUSDT;
-      console.log(`[execute-decision] 💡 AI指定金额: $${decision.sizeUSDT}`);
+      console.log(`[execute-decision] 💡 AI指定: $${decision.sizeUSDT}`);
       
-      // 🔧 智能调整：如果AI给的金额太小，自动提升到至少能买1张
-      if (requestedUSDT < usdtFor1Contract) {
-        const oldAmount = requestedUSDT;
-        requestedUSDT = usdtFor1Contract;
-        console.log(`[execute-decision] ⚡ 自动提升: $${oldAmount} → $${requestedUSDT.toFixed(2)} (确保至少1张合约)`);
+      // 仅限制：不超过可用资金的90%
+      const maxUsable = availableCash * 0.9;
+      if (requestedUSDT > maxUsable) {
+        requestedUSDT = maxUsable;
+        console.log(`[execute-decision] ⚠️ 限制为可用资金90%: $${requestedUSDT.toFixed(2)}`);
       }
-      
-      // 限制：不超过最大限额和可用资金
-      requestedUSDT = Math.min(requestedUSDT, maxOrderForSymbol, availableCash * 0.9);
-      console.log(`[execute-decision] ✅ 最终金额: $${requestedUSDT.toFixed(2)}`);
     } else {
       // AI未提供金额，系统兜底自动计算
       console.warn(`[execute-decision] ⚠️ AI未提供size_usdt，系统自动计算`);
       
-      // 使用以下较大者：30%可用资金 或 1张合约所需
       const conservative = Math.min(
         availableCash * 0.3,  // 30%可用资金（保守）
         maxOrderForSymbol
       );
       
-      requestedUSDT = Math.max(conservative, usdtFor1Contract);
-      requestedUSDT = Math.min(requestedUSDT, availableCash * 0.9); // 不超过可用资金
-      
-      console.log(`[execute-decision] 系统计算金额: $${requestedUSDT.toFixed(2)}`);
+      requestedUSDT = conservative;
+      console.log(`[execute-decision] 系统计算: $${requestedUSDT.toFixed(2)} (30%可用资金)`);
     }
     
     // === 使用保证金计算器精确计算 ===
