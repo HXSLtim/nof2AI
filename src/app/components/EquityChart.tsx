@@ -13,14 +13,21 @@ const { Text, Title } = Typography;
 type EquityRow = { ts: number; total: number };
 
 /**
- * 右侧空白比例（宽度的 10%）
- * @remarks 在保留未来可视区域的同时避免留白过多。
+ * 左右两侧空白比例（宽度的各 10%）
+ * @remarks 让曲线居中显示，两侧留有对称空白
  */
+const LEFT_PAD_RATIO = 0.10;
 const RIGHT_PAD_RATIO = 0.10;
 /**
- * 垂直方向内边距（顶部/底部）
+ * 垂直方向内边距（顶部/底部），增加空间以便自动缩放
+ * @remarks 增大内边距，确保曲线不会触及边界
  */
-const V_PAD = 8;
+const V_PAD = 30;
+/**
+ * 垂直方向头尾留白比例（顶部和底部各预留的空间）
+ * @remarks 在数据范围的基础上，顶部和底部各留出10%的空间
+ */
+const V_HEAD_TAIL_MARGIN = 0.10; // 头尾各预留 10% 空间
 
 /**
  * 归一化为 SVG 折线点串
@@ -50,11 +57,14 @@ function computePoints(
   min: number;
   max: number;
   span: number;
+  baselineValue: number; // 基准值（初始金额）
+  visualMin: number; // 可视化使用的最小值（考虑居中后）
+  visualMax: number; // 可视化使用的最大值（考虑居中后）
 } {
   if (!rows.length) {
     return {
       points: [],
-      leftPad: 0,
+      leftPad: Math.floor(width * LEFT_PAD_RATIO),
       rightPad: Math.floor(width * RIGHT_PAD_RATIO),
       topPad: V_PAD,
       bottomPad: V_PAD,
@@ -62,25 +72,77 @@ function computePoints(
       min: 0,
       max: 0,
       span: 1,
+      baselineValue: 0,
+      visualMin: 0,
+      visualMax: 1,
     };
   }
-  const leftPad = 0;
+  
+  const leftPad = Math.floor(width * LEFT_PAD_RATIO);
   const rightPad = Math.floor(width * RIGHT_PAD_RATIO);
   const topPad = V_PAD;
   const bottomPad = V_PAD;
-  const min = Math.min(...rows.map((r) => r.total));
-  const max = Math.max(...rows.map((r) => r.total));
-  const span = max - min || 1;
+  
+  // 实际数据范围
+  const dataMin = Math.min(...rows.map((r) => r.total));
+  const dataMax = Math.max(...rows.map((r) => r.total));
+  const baseline = rows[0].total; // 初始金额作为基准
+  const dataSpan = dataMax - dataMin || 1;
+  
+  // 方法：基于实际数据的最高点和最低点
+  // 头部留白 = dataSpan * 10%，尾部留白 = dataSpan * 10%
+  // 这样确保曲线的最高点和最低点距离边界都是10%
+  const headMargin = dataSpan * V_HEAD_TAIL_MARGIN; // 顶部留白
+  const tailMargin = dataSpan * V_HEAD_TAIL_MARGIN; // 底部留白
+  
+  // 计算最终的可视化范围
+  const visualMin = dataMin - tailMargin;
+  const visualMax = dataMax + headMargin;
+  const visualSpan = visualMax - visualMin || 1;
+  
+  // 调试信息
+  if (typeof window !== 'undefined' && rows.length > 0) {
+    console.log('[EquityChart] 缩放计算:', {
+      dataMin: dataMin.toFixed(2),
+      dataMax: dataMax.toFixed(2),
+      baseline: baseline.toFixed(2),
+      dataSpan: dataSpan.toFixed(2),
+      headMargin: headMargin.toFixed(2),
+      tailMargin: tailMargin.toFixed(2),
+      visualMin: visualMin.toFixed(2),
+      visualMax: visualMax.toFixed(2),
+      visualSpan: visualSpan.toFixed(2),
+      '顶部留白百分比': ((headMargin / visualSpan) * 100).toFixed(1) + '%',
+      '底部留白百分比': ((tailMargin / visualSpan) * 100).toFixed(1) + '%',
+    });
+  }
+  
   const n = rows.length;
   const usableW = Math.max(1, width - leftPad - rightPad);
   const usableH = Math.max(1, height - topPad - bottomPad);
   const stepX = usableW / Math.max(1, n - 1);
+  
+  // 映射到 SVG 坐标（使用对称的可视化范围）
   const points = rows.map((r, i) => {
     const x = leftPad + i * stepX;
-    const y = height - bottomPad - ((r.total - min) / span) * usableH;
+    const y = height - bottomPad - ((r.total - visualMin) / visualSpan) * usableH;
     return { x, y, i, row: r };
   });
-  return { points, leftPad, rightPad, topPad, bottomPad, stepX, min, max, span };
+  
+  return { 
+    points, 
+    leftPad, 
+    rightPad, 
+    topPad, 
+    bottomPad, 
+    stepX, 
+    min: dataMin, 
+    max: dataMax, 
+    span: dataMax - dataMin,
+    baselineValue: baseline,
+    visualMin,
+    visualMax,
+  };
 }
 
 /**
@@ -93,12 +155,16 @@ function splitByBaseline(
   pts: { x: number; y: number; i: number; row: EquityRow }[],
   base: number,
   height: number,
-  min: number,
-  span: number,
-  bottomPad: number
+  visualMin: number,
+  visualSpan: number,
+  bottomPad: number,
+  topPad: number
 ): { above: Array<Array<{ x: number; y: number }>>; below: Array<Array<{ x: number; y: number }>>; baselineY: number } {
   const EPS = 1e-9;
-  const baseY = height - bottomPad - ((base - min) / (span || 1)) * (height - bottomPad - V_PAD);
+  // 使用可视化范围计算基准线的 Y 坐标
+  // 可用高度 = 总高度 - 顶部padding - 底部padding
+  const usableH = height - topPad - bottomPad;
+  const baseY = height - bottomPad - ((base - visualMin) / (visualSpan || 1)) * usableH;
 
   const above: Array<Array<{ x: number; y: number }>> = [];
   const below: Array<Array<{ x: number; y: number }>> = [];
@@ -191,6 +257,8 @@ function formatTs(ts: number): string {
 export default function EquityChart() {
   const [rows, setRows] = useState<EquityRow[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  /** 主流币价格（简版） */
+  const [prices, setPrices] = useState<Record<string, number>>({});
   /**
    * 容器宽度（自适应）
    * @remarks 使用 ResizeObserver 观测父容器尺寸变化，SVG 宽度随之调整，避免出现横向滚动条。
@@ -330,13 +398,19 @@ export default function EquityChart() {
   /**
    * 鼠标移动时根据位置推断最近的数据点
    * @param e 鼠标事件
+   * @remarks 考虑左右padding，在有效区域内计算最近点
    */
   function handleMouseMove(e: React.MouseEvent<SVGSVGElement>) {
     if (!svgRef.current || !computed.points.length) return;
     const { x: mxSvg, y: mySvg } = getSvgMouseCoords(svgRef.current, e);
-    const effectiveW = width - computed.rightPad;
-    const clampX = Math.max(0, Math.min(effectiveW, mxSvg));
-    let idx = Math.round(clampX / Math.max(1e-6, computed.stepX));
+    // 有效区域：从 leftPad 到 width - rightPad
+    const effectiveStartX = computed.leftPad;
+    const effectiveEndX = width - computed.rightPad;
+    // 将鼠标X坐标限制在有效区域内
+    const clampX = Math.max(effectiveStartX, Math.min(effectiveEndX, mxSvg));
+    // 计算相对于有效区域起点的偏移
+    const relativeX = clampX - effectiveStartX;
+    let idx = Math.round(relativeX / Math.max(1e-6, computed.stepX));
     idx = Math.max(0, Math.min(rows.length - 1, idx));
     const p = computed.points[idx];
     // 十字线与 tooltip 均锚定最近数据点，避免可视偏移
@@ -350,24 +424,67 @@ export default function EquityChart() {
     setHover(null);
   }
 
+  /** 拉取主流币价格（每 3 秒） */
+  useEffect(() => {
+    let timer: any = null;
+    const fetchPrices = async () => {
+      try {
+        const res = await fetch('/api/prices', { cache: 'no-store' });
+        const json = await res.json();
+        if (res.ok && json && typeof json === 'object') {
+          setPrices(json as Record<string, number>);
+        }
+      } catch {}
+    };
+    fetchPrices();
+    timer = setInterval(fetchPrices, 3000);
+    return () => { if (timer) clearInterval(timer); };
+  }, []);
+
   return (
     <Card
-      style={{ background: '#0f1116', border: '1px solid #1a1d26', margin: 0 }}
+      style={{ background: '#0f1116', border: '1px solid #1a1d26', margin: 0, height: '100%', display: 'flex', flexDirection: 'column' }}
       /**
        * 通过 styles.body 消除 Card 默认内边距，保证 SVG 左侧贴边。
+       * @remarks 使 body 使用 flex: 1 填满剩余空间
        */
-      styles={{ body: { padding: 0 } }}
+      styles={{ body: { padding: 0, flex: 1, display: 'flex', flexDirection: 'column' } }}
       title={<span style={{ color: '#00e676' }}>账户总金额（USDT）</span>}
-      extra={<Text style={{ color: chgPct >= 0 ? '#00e676' : '#ef4444' }}>{last.toFixed(2)} USDT（{chgPct >= 0 ? '+' : ''}{chgPct.toFixed(2)}%）</Text>}
+      extra={
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <Text style={{ color: chgPct >= 0 ? '#00e676' : '#ef4444' }}>
+            {last.toFixed(2)} USDT（{chgPct >= 0 ? '+' : ''}{chgPct.toFixed(2)}%）
+          </Text>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#a1a9b7' }}>
+            {Object.entries(prices).length === 0 ? (
+              <Text style={{ color: '#a1a9b7' }}>加载主流币价格...</Text>
+            ) : (
+              Object.entries(prices).map(([instId, price]) => {
+                const coin = instId.split('-')[0];
+                const val = Number(price);
+                return (
+                  <span key={instId} style={{ color: '#a1a9b7', whiteSpace: 'nowrap' }}>
+                    {coin} {Number.isFinite(val) ? val.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '-'}
+                  </span>
+                );
+              })
+            )}
+          </div>
+        </div>
+      }
     >
       {loading ? (
-        <Text style={{ color: '#a1a9b7' }}>正在载入...</Text>
+        <div style={{ padding: 24 }}>
+          <Text style={{ color: '#a1a9b7' }}>正在载入...</Text>
+        </div>
       ) : rows.length === 0 ? (
-        <Space direction="vertical">
-          <Text style={{ color: '#a1a9b7' }}>暂无数据，可稍后重试</Text>
-        </Space>
+        <div style={{ padding: 24 }}>
+          <Space direction="vertical">
+            <Text style={{ color: '#a1a9b7' }}>暂无数据，可稍后重试</Text>
+          </Space>
+        </div>
       ) : (
-        <div ref={boxRef} style={{ width: '100%', height: '65vh', position: 'relative' }}>
+        <div ref={boxRef} style={{ width: '100%', flex: 1, position: 'relative', minHeight: 0 }}>
           <svg
             width={width}
             height={height}
@@ -379,20 +496,23 @@ export default function EquityChart() {
             onMouseLeave={handleMouseLeave}
           >
             {(() => {
-              const base = first;
+              const base = computed.baselineValue;
+              const visualSpan = computed.visualMax - computed.visualMin;
               const { above, below, baselineY } = splitByBaseline(
                 computed.points,
                 base,
                 height,
-                computed.min,
-                computed.span,
+                computed.visualMin,
+                visualSpan,
                 computed.bottomPad,
+                computed.topPad,
               );
-              const effectiveW = width - computed.rightPad;
+              const effectiveStartX = computed.leftPad;
+              const effectiveEndX = width - computed.rightPad;
               return (
                 <g>
-                  {/* 基准线：初始金额 */}
-                  <line x1={0} y1={baselineY} x2={effectiveW} y2={baselineY} stroke="#64748b" strokeDasharray="4 2" opacity={0.8} />
+                  {/* 基准线：初始金额，从左侧padding开始到右侧padding结束，垂直居中 */}
+                  <line x1={effectiveStartX} y1={baselineY} x2={effectiveEndX} y2={baselineY} stroke="#64748b" strokeDasharray="4 2" opacity={0.8} />
                   {/* 绿色段：高于初始金额 */}
                   {above.map((seg, i) => (
                     <polyline key={`a-${i}`} points={seg.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#00e676" strokeWidth={2} vectorEffect="non-scaling-stroke" />
@@ -444,7 +564,9 @@ export default function EquityChart() {
               )}
             </div>
           )}
-          <Text style={{ color: '#6b7280', fontSize: 12 }}>最近 72 小时 · 自适应宽高（父容器 65vh） · 每 3 秒刷新</Text>
+          <div style={{ position: 'absolute', bottom: 8, left: 8 }}>
+            <Text style={{ color: '#6b7280', fontSize: 12 }}>最近 72 小时 · 每 3 秒刷新</Text>
+          </div>
         </div>
       )}
     </Card>

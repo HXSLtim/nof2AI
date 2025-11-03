@@ -10,6 +10,12 @@ const OrderSchema = z.object({
   type: z.enum(['market', 'limit']),
   amount: z.number().positive(),
   price: z.number().positive().optional(),
+  /** 对冲模式下必填：long/short；一键净额模式不传 */
+  posSide: z.enum(['long', 'short']).optional(),
+  /** 仅平仓开关（可选） */
+  reduceOnly: z.boolean().optional(),
+  /** 保证金模式（默认 cross） */
+  tdMode: z.enum(['cross', 'isolated']).optional(),
 });
 
 /**
@@ -28,7 +34,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const { symbol, side, type, amount, price } = parsed.data;
+    const { symbol, side, type, amount, price, posSide, reduceOnly, tdMode } = parsed.data;
 
     if (type === 'limit' && !price) {
       return NextResponse.json(
@@ -37,7 +43,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const order = await placeOrder(symbol, side, type, amount, price);
+    const order = await placeOrder(symbol, side, type, amount, price, posSide, reduceOnly, tdMode ?? 'cross');
 
     return NextResponse.json({ ok: true, order }, { status: 201 });
   } catch (err: unknown) {

@@ -32,6 +32,7 @@ interface Position {
 export default function Positions() {
   const [list, setList] = useState<Position[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const screens = Grid.useBreakpoint();
   const compact = !screens.md;
   /** 字体更紧凑，避免列内容换行过多 */
@@ -42,6 +43,7 @@ export default function Positions() {
 
   const fetchData = async () => {
     setLoading(true);
+    setError(null);
     try {
       const res = await fetch('/api/positions');
       const json = await res.json();
@@ -65,8 +67,15 @@ export default function Positions() {
         });
         setList(mapped);
       } else {
-        console.error(json.error);
+        const errorMsg = json.error || '获取仓位失败';
+        console.error('[Positions]', errorMsg, json.details);
+        setError(errorMsg);
+        setList([]);
       }
+    } catch (err) {
+      console.error('[Positions] Fetch error:', err);
+      setError('网络请求失败，请稍后重试');
+      setList([]);
     } finally {
       setLoading(false);
     }
@@ -78,11 +87,28 @@ export default function Positions() {
     return () => clearInterval(id);
   }, []);
 
-  if (loading && list.length === 0) return <p>加载中…</p>;
-  if (!loading && list.length === 0) return <p>暂无仓位</p>;
+  if (loading && list.length === 0 && !error) {
+    return <div style={{ padding: 16, color: '#a1a9b7' }}>加载中…</div>;
+  }
+  
+  if (error) {
+    return (
+      <div style={{ padding: 16, color: '#ff4d4f' }}>
+        <div style={{ marginBottom: 8, fontWeight: 'bold' }}>⚠️ 获取仓位失败</div>
+        <div style={{ fontSize: 12, color: '#a1a9b7' }}>{error}</div>
+        <div style={{ marginTop: 12 }}>
+          <Button size="small" onClick={fetchData}>重试</Button>
+        </div>
+      </div>
+    );
+  }
+  
+  if (!loading && list.length === 0) {
+    return <div style={{ padding: 16, color: '#a1a9b7' }}>暂无仓位</div>;
+  }
 
   return (
-    <div>
+    <div style={{ height: '100%', overflowY: 'auto', padding: 8 }}>
       {compact ? (
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize, tableLayout: 'fixed' }}>
           <thead>
@@ -96,7 +122,7 @@ export default function Positions() {
             {list.map((p) => (
               <tr key={p.symbol}>
                 <td style={{ padding: cellPad, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{p.symbol}</td>
-                <td style={{ color: p.side === 'long' ? 'green' : 'red', padding: cellPad, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{p.side.toUpperCase()}</td>
+                <td style={{ color: p.side === 'long' ? 'green' : 'red', padding: cellPad, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{p.side === 'long' ? '做多' : '做空'}</td>
                 <td style={{ color: p.unrealizedPnl >= 0 ? 'green' : 'red', padding: cellPad, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                   {p.unrealizedPnl.toLocaleString('en-US', { maximumFractionDigits: 2 })}
                 </td>
@@ -109,20 +135,20 @@ export default function Positions() {
           <thead>
             <tr>
               {/* 列宽总和≈100%，避免过多空白与换行 */}
-              <th style={{ textAlign: 'left', padding: cellPad, width: '16%' }}>SIDE</th>
-              <th style={{ textAlign: 'left', padding: cellPad, width: '16%' }}>COIN</th>
-              <th style={{ textAlign: 'left', padding: cellPad, width: '12%' }}>LEVERAGE</th>
-              <th style={{ textAlign: 'left', padding: cellPad, width: '20%' }}>NOTIONAL</th>
-              <th style={{ textAlign: 'left', padding: cellPad, width: '12%' }}>EXIT PLAN</th>
-              <th style={{ textAlign: 'left', padding: cellPad, width: '24%' }}>UNREAL P&L</th>
+              <th style={{ textAlign: 'left', padding: cellPad, width: '16%' }}>方向</th>
+              <th style={{ textAlign: 'left', padding: cellPad, width: '16%' }}>币种</th>
+              <th style={{ textAlign: 'left', padding: cellPad, width: '12%' }}>杠杆</th>
+              <th style={{ textAlign: 'left', padding: cellPad, width: '20%' }}>名义价值</th>
+              <th style={{ textAlign: 'left', padding: cellPad, width: '12%' }}>退出计划</th>
+              <th style={{ textAlign: 'left', padding: cellPad, width: '24%' }}>未实现盈亏</th>
             </tr>
           </thead>
           <tbody>
             {list.map((p) => (
               <tr key={p.symbol}>
-                <td style={{ color: p.side === 'long' ? '#00e676' : '#ff4d4f', padding: cellPad, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{p.side.toUpperCase()}</td>
+                <td style={{ color: p.side === 'long' ? '#00e676' : '#ff4d4f', padding: cellPad, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{p.side === 'long' ? '做多' : '做空'}</td>
                 <td style={{ padding: cellPad, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{p.coin}</td>
-                <td style={{ padding: cellPad, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{p.leverage ? `${p.leverage}X` : '-'}</td>
+                <td style={{ padding: cellPad, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{p.leverage ? `${p.leverage}倍` : '-'}</td>
                 <td style={{ padding: cellPad, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{`$${p.notional.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}</td>
                 <td style={{ padding: cellPad }}>
                   <Button size="small" onClick={() => setPlanFor(p)}>查看</Button>
@@ -143,9 +169,9 @@ export default function Positions() {
       >
         {planFor ? (
           <div style={{ lineHeight: 1.8 }}>
-            <div>方向：{planFor.side.toUpperCase()}</div>
+            <div>方向：{planFor.side === 'long' ? '做多' : '做空'}</div>
             <div>币种：{planFor.coin}</div>
-            <div>杠杆：{planFor.leverage ? `${planFor.leverage}X` : '-'}</div>
+            <div>杠杆：{planFor.leverage ? `${planFor.leverage}倍` : '-'}</div>
             <div>名义价值：{`$${planFor.notional.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}</div>
             <div>开仓价：{planFor.entryPrice.toLocaleString('en-US', { maximumFractionDigits: 4 })}</div>
             <div>标记价：{planFor.markPrice.toLocaleString('en-US', { maximumFractionDigits: 4 })}</div>

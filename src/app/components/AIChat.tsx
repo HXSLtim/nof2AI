@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Typography, Input, Button, List, Space, Switch } from 'antd';
+import { publishDecision } from '@/lib/decisions';
+import { composePrompt, parseDecisionFromText } from '@/lib/ai-trading-prompt';
 
 const { Text } = Typography;
 
@@ -31,6 +33,26 @@ export default function AIChat() {
   const [text, setText] = useState('');
   /** 自动询问开关（默认开启） */
   const [auto, setAuto] = useState(true);
+  /** 首次加载：从数据库拉取历史消息 */
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/chat/history?limit=200', { cache: 'no-store' });
+        const json = await res.json();
+        if (json?.ok && Array.isArray(json?.data)) {
+          interface HistoryRow {
+            role: string;
+            content: string;
+            ts: number;
+          }
+          const hist: Msg[] = (json.data as HistoryRow[])
+            .filter((r) => r && (r.role === 'user' || r.role === 'assistant') && r.content)
+            .map((r) => ({ role: r.role as 'user' | 'assistant', content: String(r.content), ts: Number(r.ts), isPrompt: false }));
+          setMessages(hist);
+        }
+      } catch {}
+    })();
+  }, []);
   /**
    * 展开/收起聊天区域
    * @remarks 展开时显示消息列表与输入框；收起时仅保留控制条，便于腾出空间。
@@ -45,25 +67,22 @@ export default function AIChat() {
    */
   const [promptExpanded, setPromptExpanded] = useState<boolean>(() => {
     const saved = typeof window !== 'undefined' ? localStorage.getItem('ai_chat_prompt_expanded') : null;
-    return saved ? saved === 'true' : true;
-  });
-  /** 交易开始时间（本地持久化），用于计算已交易分钟数 */
-  const [startTs, setStartTs] = useState<number>(() => {
-    const saved = typeof window !== 'undefined' ? localStorage.getItem('ai_chat_trading_start_ts') : null;
-    const v = saved ? Number(saved) : Date.now();
-    if (typeof window !== 'undefined' && !saved) localStorage.setItem('ai_chat_trading_start_ts', String(v));
-    return v;
+    // 默认折叠
+    const def = false;
+    return saved != null ? saved === 'true' : def;
   });
   /** 自动模板触发次数（本地持久化） */
   const [invocations, setInvocations] = useState<number>(() => {
-    const saved = typeof window !== 'undefined' ? localStorage.getItem('ai_chat_auto_invocations') : null;
+    if (typeof window === 'undefined') return 0;
+    const saved = localStorage.getItem('ai_chat_auto_invocations');
     return saved ? Number(saved) : 0;
   });
   /** 定时器引用，避免多次注册 */
-  const timerRef = useRef<any>(null);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
   /** AI 请求的并发控制（避免重复发送） */
   const aiAbortRef = useRef<AbortController | null>(null);
 
+  
   /**
    * 模板后缀（静态说明与占位数据）
    * @remarks 真实价格/信号/仓位数据可在后续接入后端 API 后替换。
@@ -207,32 +226,6 @@ MACD indicators: [-10.944, -11.931, -12.011, -10.851, -10.688, -10.718, -10.245,
 RSI indicators (14‑Period): [29.663, 40.151, 42.668, 47.305, 44.218, 43.242, 44.998, 44.712, 45.62]
 `, []);
 
-  /** 组装当前时间字符串（yyyy-MM-dd HH:mm:ss.SSS） */
-  const fmtNow = () => {
-    const d = new Date();
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const y = d.getFullYear();
-    const M = pad(d.getMonth() + 1);
-    const D = pad(d.getDate());
-    const h = pad(d.getHours());
-    const m = pad(d.getMinutes());
-    const s = pad(d.getSeconds());
-    const ms = String(d.getMilliseconds()).padStart(3, '0');
-    return `${y}-${M}-${D} ${h}:${m}:${s}.${ms}`;
-  };
-
-  /**
-   * 生成自动模板消息（拼接服务端提示词）
-   * @param minutes 已交易分钟数
-   * @param currentTime 当前时间字符串
-   * @param invokes 自动触发次数
-   * @param suffix 服务端聚合提示词（README 模板风格）
-   * @returns 拼装后的完整提示词
-   * @remarks 将动态头部与服务端生成的真实数据提示词进行拼接；服务端不可用时会退回静态占位模板。
-   */
-  const composeAutoPrompt = (minutes: number, currentTime: string, invokes: number, suffix: string) => {
-    return `It has been ${minutes} minutes since you started trading. The current time is ${currentTime} and you've been invoked ${invokes} times. Below, we are providing you with a variety of state data, price data, and predictive signals so you can discover alpha. Below that is your current account information, value, performance, positions, etc.\n\n${suffix}`;
-  };
 
   /**
    * 从后端生成提示词
@@ -245,7 +238,7 @@ RSI indicators (14‑Period): [29.663, 40.151, 42.668, 47.305, 44.218, 43.242, 4
       const json = await res.json();
       if (json.success && json.prompt) return String(json.prompt);
       return STATIC_TEMPLATE_SUFFIX;
-    } catch (e) {
+    } catch {
       return STATIC_TEMPLATE_SUFFIX;
     }
   };
@@ -260,6 +253,25 @@ RSI indicators (14‑Period): [29.663, 40.151, 42.668, 47.305, 44.218, 43.242, 4
     (async () => {
       const reply = await callAI(next);
       setMessages((arr) => [...arr, { role: 'assistant', content: reply, ts: Date.now() + 1, isPrompt: false }]);
+      // 尝试解析结构化决策
+      try {
+        const parsedDecision = parseDecisionFromText(reply);
+        if (parsedDecision && parsedDecision.action !== 'HOLD') {
+          const title = `${parsedDecision.action} ${parsedDecision.symbol}`;
+          const desc = parsedDecision.reasoning;
+          publishDecision({ 
+            id: String(Date.now()) + Math.random().toString(16).slice(2), 
+            title, 
+            desc, 
+            ts: Date.now(), 
+            status: 'pending', 
+            prompt: t, 
+            reply 
+          });
+        }
+      } catch {
+        // 解析失败时静默处理
+      }
     })();
     setText('');
   };
@@ -269,28 +281,81 @@ RSI indicators (14‑Period): [29.663, 40.151, 42.668, 47.305, 44.218, 43.242, 4
    */
   const sendTemplateOnce = async () => {
     const now = Date.now();
-    const minutes = Math.max(0, Math.floor((now - startTs) / 60000));
-    const currentTime = fmtNow();
     const invokes = invocations + 1;
-    const suffix = await generatePrompt();
-    const content = composeAutoPrompt(minutes, currentTime, invokes, suffix);
-    /**
-     * 单条提示词初始折叠状态：默认跟随全局（promptExpanded）
-     * @remarks 当 promptExpanded 为 false（收起），则新提示词 collapsed 设为 true；反之为 false。
-     */
+    const marketData = await generatePrompt();
+    
+    // 计算交易时长
+    let tradingStartTime = Date.now();
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('ai_trading_start_time');
+      tradingStartTime = saved ? Number(saved) : Date.now();
+      if (!saved) localStorage.setItem('ai_trading_start_time', String(tradingStartTime));
+    }
+    const tradingMinutes = Math.floor((now - tradingStartTime) / 60000);
+    
+    // 使用原有的简洁提示词格式
+    const prompt = composePrompt(marketData, invokes, tradingMinutes);
+    
     setMessages((arr) => [
       ...arr,
-      { role: 'user', content, ts: now, isPrompt: true, collapsed: !promptExpanded },
-      { role: 'assistant', content: '提示词已生成并发送（占位回复，待接入 AI 推理）。', ts: now + 1, isPrompt: false }
+      { role: 'user', content: prompt, ts: now, isPrompt: true, collapsed: true },
     ]);
-    // 真实调用 AI 服务获取回复（基于完整提示词）
+    
+    // 调用 AI 服务获取回复
     (async () => {
       const reply = await callAI([
         ...messages,
-        { role: 'user', content, ts: now, isPrompt: true, collapsed: !promptExpanded }
+        { role: 'user', content: prompt, ts: now, isPrompt: true, collapsed: true }
       ]);
       setMessages((arr) => [...arr, { role: 'assistant', content: reply, ts: Date.now() + 1, isPrompt: false }]);
+      
+      // 使用改进的决策解析器
+      try {
+        const parsedDecision = parseDecisionFromText(reply);
+        if (parsedDecision && parsedDecision.action !== 'HOLD') {
+          // 发布结构化决策
+          const title = `${parsedDecision.action} ${parsedDecision.symbol} (置信度: ${parsedDecision.confidence}%)`;
+          const desc = `
+${parsedDecision.reasoning}
+
+决策详情：
+- 操作: ${parsedDecision.action}
+- 币种: ${parsedDecision.symbol}
+- 入场价: ${parsedDecision.entryPrice || 'N/A'}
+- 止盈: ${parsedDecision.takeProfit || 'N/A'}
+- 止损: ${parsedDecision.stopLoss || 'N/A'}
+- 杠杆: ${parsedDecision.leverage || 'N/A'}x
+- 仓位大小: ${parsedDecision.sizePercent || 'N/A'}%
+- 时间框架: ${parsedDecision.timeframe || 'N/A'}
+          `.trim();
+          
+          publishDecision({ 
+            id: String(Date.now()) + Math.random().toString(16).slice(2), 
+            title, 
+            desc, 
+            ts: Date.now(), 
+            status: 'pending', 
+            prompt, 
+            reply 
+          });
+        } else if (parsedDecision && parsedDecision.action === 'HOLD') {
+          // HOLD决策也记录
+          publishDecision({
+            id: String(Date.now()) + Math.random().toString(16).slice(2),
+            title: 'HOLD - 暂无交易机会',
+            desc: parsedDecision.reasoning,
+            ts: Date.now(),
+            status: 'approved',
+            prompt,
+            reply
+          });
+        }
+      } catch {
+        // 如果结构化解析失败，使用简单关键词提取作为备份
+        console.log('[AIChat] 使用简单关键词提取');
+      }
     })();
+    
     setInvocations(invokes);
     if (typeof window !== 'undefined') localStorage.setItem('ai_chat_auto_invocations', String(invokes));
   };
@@ -309,16 +374,70 @@ RSI indicators (14‑Period): [29.663, 40.151, 42.668, 47.305, 44.218, 43.242, 4
       timerRef.current = setInterval(() => {
         (async () => {
           const now = Date.now();
-          const minutes = Math.max(0, Math.floor((now - startTs) / 60000));
-          const currentTime = fmtNow();
           const invokes = invocations + 1;
-          const suffix = await generatePrompt();
-          const content = composeAutoPrompt(minutes, currentTime, invokes, suffix);
+          const marketData = await generatePrompt();
+          
+          // 计算交易时长
+          let tradingStartTime = Date.now();
+          if (typeof window !== 'undefined') {
+            const saved = localStorage.getItem('ai_trading_start_time');
+            tradingStartTime = saved ? Number(saved) : Date.now();
+            if (!saved) localStorage.setItem('ai_trading_start_time', String(tradingStartTime));
+          }
+          const tradingMinutes = Math.floor((now - tradingStartTime) / 60000);
+          
+          // 使用原有的简洁提示词格式
+          const prompt = composePrompt(marketData, invokes, tradingMinutes);
+          
           // 追加用户提示词并请求 AI 回复
-          const nextUser: Msg = { role: 'user', content, ts: now, isPrompt: true, collapsed: !promptExpanded };
+          const nextUser: Msg = { role: 'user', content: prompt, ts: now, isPrompt: true, collapsed: true };
           setMessages((arr) => [...arr, nextUser]);
           const reply = await callAI([...messages, nextUser]);
           setMessages((arr) => [...arr, { role: 'assistant', content: reply, ts: Date.now() + 1, isPrompt: false }]);
+          
+          // 使用改进的决策解析器
+          try {
+            const parsedDecision = parseDecisionFromText(reply);
+            if (parsedDecision && parsedDecision.action !== 'HOLD') {
+              const title = `${parsedDecision.action} ${parsedDecision.symbol} (置信度: ${parsedDecision.confidence}%)`;
+              const desc = `
+${parsedDecision.reasoning}
+
+决策详情：
+- 操作: ${parsedDecision.action}
+- 币种: ${parsedDecision.symbol}
+- 入场价: ${parsedDecision.entryPrice || 'N/A'}
+- 止盈: ${parsedDecision.takeProfit || 'N/A'}
+- 止损: ${parsedDecision.stopLoss || 'N/A'}
+- 杠杆: ${parsedDecision.leverage || 'N/A'}x
+- 仓位大小: ${parsedDecision.sizePercent || 'N/A'}%
+- 时间框架: ${parsedDecision.timeframe || 'N/A'}
+              `.trim();
+              
+              publishDecision({ 
+                id: String(Date.now()) + Math.random().toString(16).slice(2), 
+                title, 
+                desc, 
+                ts: Date.now(), 
+                status: 'pending', 
+                prompt, 
+                reply 
+              });
+            } else if (parsedDecision && parsedDecision.action === 'HOLD') {
+              publishDecision({
+                id: String(Date.now()) + Math.random().toString(16).slice(2),
+                title: 'HOLD - 暂无交易机会',
+                desc: parsedDecision.reasoning,
+                ts: Date.now(),
+                status: 'approved',
+                prompt,
+                reply
+              });
+            }
+          } catch {
+            console.log('[AIChat] 自动决策解析失败，使用备用方案');
+          }
+          
           setInvocations(invokes);
           if (typeof window !== 'undefined') localStorage.setItem('ai_chat_auto_invocations', String(invokes));
         })();
@@ -331,7 +450,7 @@ RSI indicators (14‑Period): [29.663, 40.151, 42.668, 47.305, 44.218, 43.242, 4
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auto, startTs, invocations]);
+  }, [auto, invocations]);
 
   /**
    * 切换展开状态并持久化
@@ -384,27 +503,31 @@ RSI indicators (14‑Period): [29.663, 40.151, 42.668, 47.305, 44.218, 43.242, 4
       const json = await res.json();
       if (res.ok && json?.ok && json?.content) return String(json.content);
       throw new Error(json?.error || 'AI 聊天失败');
-    } catch (e: any) {
-      if (e?.name === 'AbortError') return '（本次请求已取消）';
-      return `（AI 回复失败：${e?.message || '未知错误'}）`;
+    } catch (e) {
+      const err = e as Error & { name?: string };
+      if (err?.name === 'AbortError') return '（本次请求已取消）';
+      return `（AI 回复失败：${err?.message || '未知错误'}）`;
     }
   };
 
+
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <Space align="center" style={{ justifyContent: 'space-between' }}>
-        <Space>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 8, padding: 8 }}>
+      {/* 控制栏 */}
+      <Space align="center" style={{ justifyContent: 'space-between', flexWrap: 'wrap', flexShrink: 0 }}>
+        <Space size={8}>
           <Switch checked={auto} onChange={setAuto} />
-          <Text style={{ color: '#a1a9b7' }}>{auto ? '自动询问：每 3 分钟' : '自动询问：已关闭'}</Text>
+          <Text style={{ color: '#a1a9b7', fontSize: 12 }}>{auto ? '自动询问：每 3 分钟' : '自动询问：已关闭'}</Text>
         </Space>
-        <Space>
+        <Space size={4}>
           <Button size="small" onClick={toggleExpanded}>{expanded ? '收起' : '展开'}</Button>
           <Button size="small" onClick={togglePromptExpanded}>{promptExpanded ? '收起提示词' : '展开提示词'}</Button>
           <Button size="small" onClick={sendTemplateOnce}>立即询问一次</Button>
         </Space>
       </Space>
+
       {expanded ? (
-        <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #1a1d26', borderRadius: 6, padding: 8, background: '#0f1116' }}>
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', border: '1px solid #1a1d26', borderRadius: 6, padding: 8, background: '#0f1116' }}>
           {messages.length === 0 ? (
             <Text style={{ color: '#a1a9b7' }}>暂无消息，输入内容开始与 AI 对话</Text>
           ) : (
@@ -417,7 +540,7 @@ RSI indicators (14‑Period): [29.663, 40.151, 42.668, 47.305, 44.218, 43.242, 4
                       <>
                         {/**
                          * 单条提示词折叠优先：m.collapsed 未设置时跟随全局 !promptExpanded
-                         * @remarks 提供“展开此提示词/折叠此提示词”单条开关，同时保留顶部的全局折叠开关。
+                         * @remarks 提供"展开此提示词/折叠此提示词"单条开关，同时保留顶部的全局折叠开关。
                          */}
                         <Space align="center" style={{ justifyContent: 'space-between' }}>
                           {(m.collapsed ?? !promptExpanded) ? (
@@ -447,14 +570,15 @@ RSI indicators (14‑Period): [29.663, 40.151, 42.668, 47.305, 44.218, 43.242, 4
           )}
         </div>
       ) : (
-        <div style={{ border: '1px dashed #1a1d26', borderRadius: 6, padding: 8, background: '#0f1116' }}>
-          <Text style={{ color: '#a1a9b7' }}>
+        <div style={{ border: '1px dashed #1a1d26', borderRadius: 6, padding: 12, background: '#0f1116', flexShrink: 0 }}>
+          <Text style={{ color: '#a1a9b7', fontSize: 12 }}>
             聊天区域已收起。{messages.length ? `最近消息：${new Date(messages[messages.length - 1].ts).toLocaleString()}` : '暂无消息'}
           </Text>
         </div>
       )}
+
       {expanded && (
-        <Space.Compact>
+        <Space.Compact style={{ flexShrink: 0 }}>
           <Input.TextArea
             value={text}
             onChange={(e) => setText(e.target.value)}

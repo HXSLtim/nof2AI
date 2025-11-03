@@ -16,12 +16,21 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  // 在 Node 运行时异步启动调度器（动态导入，避免 Edge 构建引入 Node 依赖）
+  // 在 Node 运行时异步启动所有调度器（动态导入，避免 Edge 构建引入 Node 依赖）
   if (typeof window === 'undefined') {
     import('@/lib/scheduler')
-      .then((m) => m.startEquityScheduler())
+      .then((m) => {
+        // 启动账户总金额采集（每1分钟）
+        m.startEquityScheduler();
+        // 启动市场数据和指标采集（每3分钟）
+        m.startDataCollector();
+        // 启动数据清理（每天一次）
+        m.startCleanupScheduler();
+        // 启动AI决策自动调度器（每5分钟，可配置）
+        m.startAIDecisionScheduler();
+      })
       .catch((e) => {
-        console.error('[layout] failed to start equity scheduler', e);
+        console.error('[layout] failed to start schedulers', e);
       });
   }
   return (

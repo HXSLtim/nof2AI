@@ -7,12 +7,23 @@
 
 html,
 body {
-  height: 100%;
+  height: 100vh;
+  min-height: 100vh;
+  max-height: 100vh;
   background: #0f1116;
   color: #ffffff;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+/* 确保根元素也不产生滚动 */
+#__next {
+  height: 100vh;
+  min-height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
 }
 
 a {
@@ -33,4 +44,43 @@ a {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #555;
+}
+
+/* 面板 Tabs：让每个标签内容成为可滚动容器 */
+.panel-tabs {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.panel-tabs .ant-tabs-content-holder {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* 防止内容撑破父容器，强制内部滚动 */
+}
+.panel-tabs .ant-tabs-content {
+  height: 100%;
+}
+.panel-tabs .ant-tabs-tabpane {
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 响应式：小屏幕上让列垂直堆叠 */
+@media (max-width: 768px) {
+  /* 移动端时确保内容区域高度合适，允许内部滚动 */
+  .ant-layout-content {
+    height: calc(100vh - 64px);
+    min-height: calc(100vh - 64px);
+    max-height: calc(100vh - 64px);
+    overflow-y: auto;
+  }
+  
+  /* 移动端 Row 允许垂直滚动 */
+  .ant-row {
+    overflow-y: auto;
+  }
 }

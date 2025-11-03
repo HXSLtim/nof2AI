@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { insertChatMessage } from '@/lib/db';
 
 /**
  * AI 聊天代理路由
@@ -106,7 +107,18 @@ export async function POST(req: NextRequest) {
       ?? data?.output_text
       ?? (typeof data === 'string' ? data : undefined);
     if (!content) throw new Error('未从 AI 服务响应中解析到文本内容');
-
+    // 入库：记录最新一条用户消息与本次助手回复
+    try {
+      const now = Date.now();
+      const last = Array.isArray(messages) && messages.length ? messages[messages.length - 1] : undefined;
+      if (last && last.role && last.content) {
+        insertChatMessage(now - 1, (last.role as any) || 'user', String(last.content));
+      }
+      insertChatMessage(now, 'assistant', String(content));
+    } catch (e) {
+      // 静默入库错误，避免影响聊天流程
+      console.error('[ai/chat] log to db failed', e);
+    }
     return NextResponse.json({ ok: true, content });
   } catch (err: unknown) {
     return NextResponse.json({ ok: false, error: (err as Error).message || 'AI 聊天失败' }, { status: 400 });

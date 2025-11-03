@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
-import { fetchCandles, fetchFundingRate, fetchOpenInterest, fetchAccountTotal, fetchAvailableUSDT, fetchPositions } from '@/lib/okx';
-import { queryEquity } from '@/lib/db';
+import { fetchCandles, fetchFundingRate, fetchOpenInterest, fetchAccountTotal, fetchAvailableUSDT, fetchPositions, fetchTickers } from '@/lib/okx';
+import { queryEquity, queryPrices, queryIndicators3m, queryLatestFundingRate, queryLatestOpenInterest, insertPriceSnapshot, insertIndicators3m, insertFundingRate, insertOpenInterest, queryActiveOpenDecisions } from '@/lib/db';
 import { ema, macd, rsi, atr, midPrices } from '@/lib/indicators';
+import { getSentimentIndicators, formatSentimentForPrompt } from '@/lib/sentiment';
+import { parseDecisionFromText } from '@/lib/ai-trading-prompt';
 
 /**
  * 生成符合 README 模板的 AI 提示词
@@ -25,32 +27,71 @@ export async function GET() {
     const latestEma20ByCoin: Record<string, number> = {};
 
     /**
-     * 序列说明：调整为“最新 → 最旧”以便快速查看最近状态
+     * 序列说明：调整为"最新 → 最旧"以便快速查看最近状态
      */
-    const header = `ALL OF THE PRICE OR SIGNAL DATA BELOW IS ORDERED: NEWEST → OLDEST\n\nTimeframes note: Unless stated otherwise in a section title, intraday series are provided at 3‑minute intervals. If a coin uses a different interval, it is explicitly stated in that coin’s section.\n\nCURRENT MARKET STATE FOR ALL COINS`;
+    const header = `ALL OF THE PRICE OR SIGNAL DATA BELOW IS ORDERED: NEWEST → OLDEST\n\nTimeframes note: Unless stated otherwise in a section title, intraday series are provided at 3‑minute intervals. If a coin uses a different interval, it is explicitly stated in that coin's section.\n\nCURRENT MARKET STATE FOR ALL COINS`;
+
+    // === 优化：批量获取所有币种价格，减少请求次数 ===
+    const now = Date.now();
+    let allPrices: Record<string, number> = {};
+    
+    try {
+      // 一次性获取所有价格
+      allPrices = await fetchTickers(INST_IDS);
+      // 批量存储
+      for (const [instId, price] of Object.entries(allPrices)) {
+        if (price > 0) {
+          insertPriceSnapshot(now, instId, price);
+        }
+      }
+      console.log('[api/ai/prompt] 批量获取价格成功');
+    } catch (error) {
+      console.warn('[api/ai/prompt] 批量获取价格失败，将从数据库读取:', error);
+      // 从数据库读取备用
+      for (const instId of INST_IDS) {
+        const dbPrices = queryPrices(instId, now - 10 * 60 * 1000, 1);
+        if (dbPrices.length > 0) {
+          allPrices[instId] = dbPrices[dbPrices.length - 1].price;
+        }
+      }
+    }
 
     for (const instId of INST_IDS) {
       const coin = instId.split('-')[0];
-      // 3m K 线：保证指标稳定性，取 120 根
+      
+      // 1. 使用批量获取的价格
+      const currentPrice = allPrices[instId] || 0;
+      
+      // 2. 获取3分钟K线数据并计算指标
       const candles3m = await fetchCandles(instId, '3m', 120);
       if (candles3m.length < 20) throw new Error(`3m candles too short for ${instId}`);
+      
       const mids = midPrices(candles3m);
-      const closes = candles3m.map((c) => c.close);
       const ema20_3m = ema(mids, 20);
       const macdHist_3m = macd(mids, 12, 26, 9);
       const rsi7_3m = rsi(mids, 7);
       const rsi14_3m = rsi(mids, 14);
 
-      const currentPrice = mids[mids.length - 1];
       const currentEma20 = ema20_3m[ema20_3m.length - 1];
       const currentMacd = macdHist_3m[macdHist_3m.length - 1];
       const currentRsi7 = rsi7_3m[rsi7_3m.length - 1];
       latestEma20ByCoin[coin] = currentEma20;
+      
+      // 存储最新的3分钟指标
+      try {
+        insertIndicators3m(now, instId, {
+          ema20: currentEma20,
+          macd: currentMacd,
+          rsi7: currentRsi7,
+          rsi14: rsi14_3m[rsi14_3m.length - 1]
+        });
+      } catch {}
 
-      // 资金费率与持仓量（最新值）；平均值暂以最新近似，后续接入历史 OI 再替换
-      const fundingRate = await fetchFundingRate(instId);
-      const openInterestLatest = await fetchOpenInterest(instId);
-      const openInterestAvg = openInterestLatest; // TODO: 接入 OI 历史，计算真实均值
+      // 3. 资金费率和持仓量：从数据库读取（data-collector已采集）
+      const fundingRate = queryLatestFundingRate(instId) ?? 0;
+      const openInterestData = queryLatestOpenInterest(instId);
+      const openInterestLatest = openInterestData?.latest ?? 0;
+      const openInterestAvg = openInterestData?.average ?? 0;
 
       // 序列输出采用最近 10 个点，且按“最新 → 最旧”排列
       const takeLastDesc = (arr: number[]) => arr.slice(Math.max(0, arr.length - 10)).reverse();
@@ -105,6 +146,29 @@ export async function GET() {
       sections.push(section);
     }
 
+    // 获取BTC情绪指标
+    const sentimentBTC = await getSentimentIndicators('BTC');
+    const sentimentText = formatSentimentForPrompt(sentimentBTC);
+    
+    // 获取活跃的开仓决策（还未平仓的）
+    const activeDecisions = queryActiveOpenDecisions();
+    const activeDecisionsText = activeDecisions.length > 0
+      ? `\n\nYOUR ACTIVE OPEN POSITIONS FROM PREVIOUS DECISIONS (still open, not yet closed):\n${activeDecisions.map((d, idx) => {
+          const parsed = parseDecisionFromText(d.reply || '');
+          const timeAgo = Math.floor((Date.now() - d.ts) / 60000); // 分钟前
+          return `${idx + 1}. [Opened ${timeAgo} minutes ago] ${parsed ? JSON.stringify({
+            symbol: parsed.symbol,
+            action: parsed.action,
+            confidence: parsed.confidence,
+            entry_price: parsed.entryPrice,
+            take_profit: parsed.takeProfit,
+            stop_loss: parsed.stopLoss,
+            leverage: parsed.leverage,
+            reasoning: parsed.reasoning.substring(0, 80)
+          }) : d.title}`;
+        }).join('\n')}\n\nIMPORTANT: The positions above are still ACTIVE (not yet closed). Consider whether to:\n- HOLD: Keep these positions if they're performing well\n- CLOSE: Exit if stop loss hit or take profit reached\n- Avoid opening the same position again if it's already active`
+      : '';
+    
     // 账户信息与绩效
     const hours = 72;
     const since = Date.now() - hours * 3600 * 1000;
@@ -149,11 +213,32 @@ export async function GET() {
       return `{'symbol': '${sym}', 'side': '${side}', 'quantity': ${f(qty)}, 'entry_price': ${f(entry)}, 'current_price': ${f(mark)}, 'liquidation_price': ${f(liq)}, 'unrealized_pnl': ${f(upl)}, 'leverage': ${f(lev)}, 'exit_plan': ${exitPlan}, 'confidence': ${f(confidence)}, 'risk_usd': ${f(riskUsd)}, 'sl_oid': -1, 'tp_oid': -1, 'wait_for_fill': False, 'entry_oid': -1, 'notional_usd': ${f(notional)}}`;
     };
     
-    // 拉取当前仓位并拼接到账户信息段
+    // 拉取当前实际仓位（来自OKX）
     const positions = await fetchPositions().catch(() => [] as any[]);
     const positionsLine = positions.length
-      ? `\n\nCurrent live positions & performance: ${positions.map(formatPosition).join(' ')}`
-      : `\n\nCurrent live positions & performance: None`;
+      ? `\n\nCURRENT LIVE POSITIONS (from OKX exchange, these are your ACTUAL positions right now): ${positions.map(formatPosition).join(' ')}`
+      : `\n\nCURRENT LIVE POSITIONS (from OKX exchange): None - You have NO open positions currently`;
+    
+    // 生成仓位摘要（方便AI快速识别，包含手续费计算）
+    const positionSummary = positions.length > 0
+      ? `\n\nQUICK SUMMARY - You currently have:\n${positions.map(p => {
+          const sym = String(p.coin || '');
+          const side = String(p.side || '').toLowerCase();
+          const upl = Number(p.unrealizedPnl || 0);
+          const entry = Number(p.entryPrice || 0);
+          const mark = Number(p.markPrice || 0);
+          const notional = Number(p.notional || 0);
+          const uplPct = entry > 0 ? ((mark - entry) / entry * 100) : 0;
+          
+          // 计算手续费（OKX taker费率约0.05%，开仓+平仓=0.1%）
+          const totalFeeRate = 0.001; // 0.1%
+          const estimatedFee = notional * totalFeeRate;
+          const netProfit = upl - estimatedFee;
+          const netProfitPct = entry > 0 ? (netProfit / (notional / (Number(p.leverage) || 1)) * 100) : 0;
+          
+          return `- ${sym} ${side.toUpperCase()}: 未实现盈亏=${upl >= 0 ? '+' : ''}$${upl.toFixed(2)} (${uplPct >= 0 ? '+' : ''}${uplPct.toFixed(2)}%), 扣除手续费后净收益≈${netProfit >= 0 ? '+' : ''}$${netProfit.toFixed(2)} (${netProfitPct >= 0 ? '+' : ''}${netProfitPct.toFixed(2)}%)`;
+        }).join('\n')}\n\nNOTE: Fee calculation assumes 0.05% taker fee × 2 (open + close) = 0.1% total. Actual profit after fees is what matters for decisions.`
+      : '';
 
     const footer = [
       'HERE IS YOUR ACCOUNT INFORMATION & PERFORMANCE',
@@ -161,6 +246,10 @@ export async function GET() {
       `\nAvailable Cash: ${Number(cashUSDT.toFixed(2))}`,
       `\nCurrent Account Value: ${Number(totalEqLatest.toFixed(2))}`,
       positionsLine,
+      positionSummary,
+      `\n\n${sentimentText}`,
+      activeDecisionsText,
+      `\n\nIMPORTANT FOR CLOSE ACTIONS: Before issuing any CLOSE action, check "CURRENT LIVE POSITIONS" above. Only close positions that actually exist. If a position from your decision history is not in the live positions list, it may have been auto-closed by TP/SL or the open order failed.`,
     ].join('\n');
 
     const prompt = [header, '', sections.join('\n\n'), '', footer].join('\n');
