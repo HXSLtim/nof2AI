@@ -5,7 +5,12 @@
       "Bash(npm run build:*)",
       "Bash(Get-ChildItem -Path \"c:\\Users\\a2778\\Desktop\\Quant\" -Recurse)",
       "Bash(Where-Object { -not $_SIsContainer })",
-      "Bash(Format-Table Name, Length, LastWriteTime -AutoSize)"
+      "Bash(Format-Table Name, Length, LastWriteTime -AutoSize)",
+      "Bash(Get-ChildItem -Path \"c:\\Users\\a2778\\Desktop\\code\\Quant\" -Recurse)",
+      "Bash(Sort-Object:*)",
+      "Bash(Select-Object Name, Length, LastWriteTime)",
+      "Bash(Format-Table -AutoSize)",
+      "Bash(tree:*)"
     ],
     "deny": [],
     "ask": []

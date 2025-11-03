@@ -181,11 +181,11 @@ export interface ParsedDecision {
 
 /**
  * 从AI响应中解析决策（支持单个或多个）
+ * @param text AI回复文本
+ * @param silent 静默模式（不输出日志），用于解析历史决策
  * @returns 决策数组
  */
-export function parseDecisionsFromText(text: string): ParsedDecision[] {
-  console.log('[parseDecisions] 开始解析，文本长度:', text.length);
-  
+export function parseDecisionsFromText(text: string, silent = false): ParsedDecision[] {
   // 尝试解析JSON格式
   try {
     let jsonText = text.trim();
@@ -200,7 +200,6 @@ export function parseDecisionsFromText(text: string): ParsedDecision[] {
     }
     
     const parsed = JSON.parse(jsonText);
-    console.log('[parseDecisions] JSON解析成功:', parsed);
     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const parseOne = (obj: any): ParsedDecision => ({
@@ -219,21 +218,21 @@ export function parseDecisionsFromText(text: string): ParsedDecision[] {
     
     // 检查是否是多决策格式
     if (parsed.decisions && Array.isArray(parsed.decisions)) {
-      console.log('[parseDecisions] 检测到多决策格式，数量:', parsed.decisions.length);
+      if (!silent) console.log(`[parseDecisions] ✅ ${parsed.decisions.length}个决策`);
       return parsed.decisions.map(parseOne);
     }
     
     // 单个决策格式
     if (parsed.action) {
-      console.log('[parseDecisions] 检测到单决策格式');
+      if (!silent) console.log('[parseDecisions] ✅ 单个决策');
       return [parseOne(parsed)];
     }
   } catch {
-    console.log('[parseDecisions] JSON解析失败');
+    if (!silent) console.log('[parseDecisions] ❌ 解析失败');
   }
   
   // 兜底 - 返回HOLD
-  console.log('[parseDecisions] 使用兜底HOLD决策');
+  if (!silent) console.log('[parseDecisions] ⚠️ 兜底HOLD');
   return [{
     symbol: 'GENERAL',
     action: 'HOLD',
@@ -244,8 +243,10 @@ export function parseDecisionsFromText(text: string): ParsedDecision[] {
 
 /**
  * 单个决策解析（兼容旧代码）
+ * @param text AI回复文本
+ * @param silent 静默模式（不输出日志），用于解析历史决策
  */
-export function parseDecisionFromText(text: string): ParsedDecision | null {
-  const decisions = parseDecisionsFromText(text);
+export function parseDecisionFromText(text: string, silent = false): ParsedDecision | null {
+  const decisions = parseDecisionsFromText(text, silent);
   return decisions.length > 0 ? decisions[0] : null;
 }

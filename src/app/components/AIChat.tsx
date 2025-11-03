@@ -253,9 +253,9 @@ RSI indicators (14‑Period): [29.663, 40.151, 42.668, 47.305, 44.218, 43.242, 4
     (async () => {
       const reply = await callAI(next);
       setMessages((arr) => [...arr, { role: 'assistant', content: reply, ts: Date.now() + 1, isPrompt: false }]);
-      // 尝试解析结构化决策
+      // 尝试解析结构化决策（新生成的，显示日志）
       try {
-        const parsedDecision = parseDecisionFromText(reply);
+        const parsedDecision = parseDecisionFromText(reply, false);
         if (parsedDecision && parsedDecision.action !== 'HOLD') {
           const title = `${parsedDecision.action} ${parsedDecision.symbol}`;
           const desc = parsedDecision.reasoning;
@@ -309,9 +309,9 @@ RSI indicators (14‑Period): [29.663, 40.151, 42.668, 47.305, 44.218, 43.242, 4
       ]);
       setMessages((arr) => [...arr, { role: 'assistant', content: reply, ts: Date.now() + 1, isPrompt: false }]);
       
-      // 使用改进的决策解析器
+      // 使用改进的决策解析器（新生成的，显示日志）
       try {
-        const parsedDecision = parseDecisionFromText(reply);
+        const parsedDecision = parseDecisionFromText(reply, false);
         if (parsedDecision && parsedDecision.action !== 'HOLD') {
           // 发布结构化决策
           const title = `${parsedDecision.action} ${parsedDecision.symbol} (置信度: ${parsedDecision.confidence}%)`;
@@ -395,9 +395,9 @@ ${parsedDecision.reasoning}
           const reply = await callAI([...messages, nextUser]);
           setMessages((arr) => [...arr, { role: 'assistant', content: reply, ts: Date.now() + 1, isPrompt: false }]);
           
-          // 使用改进的决策解析器
+          // 使用改进的决策解析器（新生成的，显示日志）
           try {
-            const parsedDecision = parseDecisionFromText(reply);
+            const parsedDecision = parseDecisionFromText(reply, false);
             if (parsedDecision && parsedDecision.action !== 'HOLD') {
               const title = `${parsedDecision.action} ${parsedDecision.symbol} (置信度: ${parsedDecision.confidence}%)`;
               const desc = `

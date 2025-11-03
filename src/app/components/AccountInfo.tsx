@@ -24,14 +24,16 @@ export default function AccountInfo() {
     'DOGE': 'Dogecoin'
   };
 
-  // 获取账户总金额
+  // 获取账户总金额（从数据库读取最新记录，不调用OKX API）
   const fetchAccountTotal = async () => {
     try {
-      const res = await fetch('/api/equity/snapshot', { method: 'POST', cache: 'no-store' });
+      const res = await fetch('/api/equity?hours=1&_=' + Date.now(), { cache: 'no-store' });
       if (res.ok) {
         const data = await res.json();
-        if (data.success) {
-          setAccountTotal(data.total);
+        if (data.success && data.data && data.data.length > 0) {
+          // 获取最新的一条记录
+          const latest = data.data[data.data.length - 1];
+          setAccountTotal(latest.total);
         }
       }
     } catch (error) {
@@ -70,8 +72,8 @@ export default function AccountInfo() {
 
     loadData();
 
-    // 每30秒更新一次价格和账户信息
-    const interval = setInterval(loadData, 30000);
+    // 每1分钟更新一次（与后端scheduler同步）
+    const interval = setInterval(loadData, 60000);
     return () => clearInterval(interval);
   }, []);
 

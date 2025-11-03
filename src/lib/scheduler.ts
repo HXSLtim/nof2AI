@@ -35,7 +35,7 @@ export function startEquityScheduler() {
    * 采集间隔（毫秒）
    * @remarks 默认 60000ms（1分钟）；可通过环境变量 `EQUITY_SCHEDULER_MS` 覆盖
    */
-  const intervalMs = Number(process.env.EQUITY_SCHEDULER_MS || 60000);
+  const intervalMs = Number(process.env.EQUITY_SCHEDULER_MS || 60000); // 60000ms = 1分钟
 
   /**
    * 执行一次采集并计划下一次，避免并发与时间漂移。
@@ -46,10 +46,7 @@ export function startEquityScheduler() {
     try {
       const total = await fetchAccountTotal();
       insertEquity(Date.now(), total);
-      if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
-        console.log('[equity-scheduler] snapshot', new Date().toISOString(), total);
-      }
+      // console.log('[equity-scheduler] snapshot', new Date().toISOString(), total); // ✅ 屏蔽
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error('[equity-scheduler] failed', e);

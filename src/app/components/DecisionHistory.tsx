@@ -185,13 +185,9 @@ export default function DecisionHistory() {
       const aiReply = json2.content;
       if (isManual) message.success('AI回复已生成，正在解析决策...');
       
-      // 调试：输出AI回复
-      console.log('[DecisionHistory] AI回复:', aiReply.substring(0, 500));
-      
       // 4. 解析决策（支持多个）
       const parsedDecisions = parseDecisionsFromText(aiReply);
-      console.log('[DecisionHistory] 解析结果:', parsedDecisions.length, '个决策');
-      console.log('[DecisionHistory] 决策详情:', parsedDecisions.map(d => `${d.symbol}-${d.action}`).join(', '));
+      console.log(`[DecisionHistory] ✅ 解析: ${parsedDecisions.length}个决策 - ${parsedDecisions.map(d => `${d.symbol}-${d.action}`).join(', ')}`);
       
       if (!parsedDecisions || parsedDecisions.length === 0) {
         console.error('[DecisionHistory] 解析失败，这不应该发生');
@@ -208,7 +204,7 @@ export default function DecisionHistory() {
         const parsedDecision = parsedDecisions[i];
         const decisionId = (isManual ? 'test-' : 'auto-') + Date.now() + '-' + i + '-' + Math.random().toString(16).slice(2);
         
-        console.log(`[DecisionHistory] 处理决策 ${i + 1}/${parsedDecisions.length}: ${parsedDecision.symbol} ${parsedDecision.action}`);
+        // console.log(`[DecisionHistory] 处理决策 ${i + 1}/${parsedDecisions.length}: ${parsedDecision.symbol} ${parsedDecision.action}`); // ✅ 屏蔽
       
       if (parsedDecision.action !== 'HOLD') {
         tradingCount++;
@@ -228,11 +224,11 @@ ${parsedDecision.reasoning}
 - 时间框架: ${parsedDecision.timeframe || 'SHORT'}
         `.trim();
         
-        console.log(`[DecisionHistory] 交易决策 #${tradingCount}:`, title);
+        // console.log(`[DecisionHistory] 交易决策 #${tradingCount}:`, title); // ✅ 屏蔽
         
         // 如果开启了自动执行，立即执行交易（无论手动还是自动触发）
         if (autoExecute) {
-          console.log('[DecisionHistory] 自动执行交易:', title);
+          console.log(`[DecisionHistory] → 自动执行: ${parsedDecision.symbol} ${parsedDecision.action}`);
           if (isManual) message.info('🤖 自动执行模式已开启，正在执行交易...');
           
           try {
@@ -261,7 +257,7 @@ ${parsedDecision.reasoning}
                 prompt, 
                 reply: aiReply 
               });
-              console.log(`✅ [自动执行] ${title} - 订单ID: ${result.order?.orderId}`);
+              console.log(`✅ [自动执行] ${parsedDecision.symbol} ${parsedDecision.action} - ID: ${result.order?.orderId}`);
               if (isManual) message.success(`✅ 交易已自动执行！订单ID: ${result.order?.orderId}`);
             } else {
               // 执行失败，发布为待处理（让用户查看失败原因）
@@ -303,7 +299,7 @@ ${parsedDecision.reasoning}
           });
           
           if (isManual) message.success('✅ 决策已生成！');
-          console.log('[DecisionHistory] 已发布交易决策:', title);
+          // console.log('[DecisionHistory] 已发布交易决策:', title); // ✅ 屏蔽
         }
       } else {
         holdCount++;
@@ -320,7 +316,7 @@ ${parsedDecision.reasoning}
           reply: aiReply
         });
         
-        console.log(`[DecisionHistory] HOLD决策 #${holdCount}: ${symbolName}`);
+        // console.log(`[DecisionHistory] HOLD决策 #${holdCount}: ${symbolName}`); // ✅ 屏蔽
       }
       
       // 延迟100ms避免决策ID冲突
@@ -329,7 +325,7 @@ ${parsedDecision.reasoning}
       }
     } // for循环结束
       
-      console.log(`[DecisionHistory] 决策处理完成: 交易=${tradingCount}, HOLD=${holdCount}, 总计=${parsedDecisions.length}`);
+      console.log(`[DecisionHistory] ✅ 处理完成: ${tradingCount}个交易, ${holdCount}个HOLD`);
       
       // 所有决策处理完后，更新调用计数
       setInvocationCount(newCount);
@@ -364,15 +360,51 @@ ${parsedDecision.reasoning}
    */
   const handleApproveAndExecute = async (decision: Decision) => {
     try {
-      // 1. 解析决策以获取交易参数
-      const parsedDecision = parseDecisionFromText(decision.reply || '');
+      // 1. 从决策描述中提取币种和操作信息
+      // BUG修复：不能从reply解析所有决策然后取第一个，必须精确匹配当前决策
+      const titleMatch = decision.title.match(/(OPEN_LONG|OPEN_SHORT|CLOSE_LONG|CLOSE_SHORT|HOLD)\s+([A-Z]+)/);
+      const descMatch = decision.desc?.match(/币种:\s*([A-Z]+)/);
       
-      if (!parsedDecision || parsedDecision.action === 'HOLD') {
+      if (!titleMatch && !descMatch) {
+        message.error('无法解析决策信息');
+        return;
+      }
+      
+      const action = titleMatch?.[1] as ParsedDecision['action'] || 'HOLD';
+      const symbol = titleMatch?.[2] || descMatch?.[1] || '';
+      
+      console.log('[handleApproveAndExecute] 从标题/描述解析:', { symbol, action, title: decision.title });
+      
+      if (action === 'HOLD' || !symbol) {
         // HOLD决策直接标记为通过，不执行交易
         await updateDecisionStatus(decision.id, 'approved');
         message.info('HOLD决策已通过（无需执行交易）');
         return;
       }
+      
+      // 2. 从描述中提取完整的交易参数
+      const desc = decision.desc || '';
+      const entryPriceMatch = desc.match(/入场价:\s*(\d+\.?\d*)/);
+      const takeProfitMatch = desc.match(/止盈:\s*(\d+\.?\d*)/);
+      const stopLossMatch = desc.match(/止损:\s*(\d+\.?\d*)/);
+      const leverageMatch = desc.match(/杠杆:\s*(\d+)/);
+      const sizeUSDTMatch = desc.match(/仓位大小:\s*\$(\d+\.?\d*)\s*USDT/);
+      const confidenceMatch = decision.title.match(/置信度:\s*(\d+)%/);
+      const reasoningMatch = desc.match(/^([\s\S]*?)(?:\n\n决策详情：|$)/);
+      
+      const parsedDecision: ParsedDecision = {
+        symbol,
+        action,
+        confidence: confidenceMatch ? parseInt(confidenceMatch[1]) : 50,
+        entryPrice: entryPriceMatch ? parseFloat(entryPriceMatch[1]) : undefined,
+        takeProfit: takeProfitMatch ? parseFloat(takeProfitMatch[1]) : undefined,
+        stopLoss: stopLossMatch ? parseFloat(stopLossMatch[1]) : undefined,
+        leverage: leverageMatch ? parseInt(leverageMatch[1]) : 5,
+        sizeUSDT: sizeUSDTMatch ? parseFloat(sizeUSDTMatch[1]) : undefined,
+        reasoning: reasoningMatch ? reasoningMatch[1].trim() : '未提供理由'
+      };
+      
+      console.log('[handleApproveAndExecute] 最终解析结果:', parsedDecision);
 
       // 执行交易的函数
       const executeNow = async () => {
@@ -472,13 +504,34 @@ ${parsedDecision.reasoning}
 
     for (const decision of pending) {
       try {
-        const parsedDecision = parseDecisionFromText(decision.reply || '');
+        // BUG修复：从标题/描述中精确提取当前决策的信息
+        const titleMatch = decision.title.match(/(OPEN_LONG|OPEN_SHORT|CLOSE_LONG|CLOSE_SHORT|HOLD)\s+([A-Z]+)/);
+        const action = titleMatch?.[1] as ParsedDecision['action'] || 'HOLD';
+        const symbol = titleMatch?.[2] || '';
         
-        if (!parsedDecision || parsedDecision.action === 'HOLD') {
+        if (action === 'HOLD' || !symbol) {
           await updateDecisionStatus(decision.id, 'approved');
           successCount++;
           continue;
         }
+        
+        // 从描述中提取参数
+        const desc = decision.desc || '';
+        const leverageMatch = desc.match(/杠杆:\s*(\d+)/);
+        const sizeUSDTMatch = desc.match(/仓位大小:\s*\$(\d+\.?\d*)\s*USDT/);
+        const takeProfitMatch = desc.match(/止盈:\s*(\d+\.?\d*)/);
+        const stopLossMatch = desc.match(/止损:\s*(\d+\.?\d*)/);
+        
+        const parsedDecision: ParsedDecision = {
+          symbol,
+          action,
+          confidence: 50,
+          leverage: leverageMatch ? parseInt(leverageMatch[1]) : 5,
+          sizeUSDT: sizeUSDTMatch ? parseFloat(sizeUSDTMatch[1]) : undefined,
+          takeProfit: takeProfitMatch && takeProfitMatch[1] !== 'N/A' ? parseFloat(takeProfitMatch[1]) : undefined,
+          stopLoss: stopLossMatch && stopLossMatch[1] !== 'N/A' ? parseFloat(stopLossMatch[1]) : undefined,
+          reasoning: '批量执行'
+        };
 
         // 执行交易
         const res = await fetch('/api/ai/execute-decision', {

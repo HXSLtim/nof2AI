@@ -50,6 +50,13 @@ export const okx = new ccxt.okx({
      */
     defaultType: 'swap',
     /**
+     * 🔧 CRITICAL: OKX SWAP合约的amount单位设置
+     * - 'contracts': amount表示合约张数
+     * - 'base': amount表示基础货币数量（如BTC的数量）
+     * - 默认是'base'，但我们需要'contracts'
+     */
+    createMarketBuyOrderRequiresPrice: false,
+    /**
      * 可选：如需手动指定 API URL（高级用户）
      * CCXT 已自动处理，通常不需要配置
      */
@@ -63,6 +70,7 @@ export const okx = new ccxt.okx({
   // 开发环境：允许自签名证书（仅用于本地测试）
   // 生产环境应设为 true
   enableRateLimit: true, // 启用请求频率限制
+  verbose: false, // ✅ 关闭ccxt详细日志（太多信息）
 });
 
 /**
@@ -109,6 +117,8 @@ export async function fetchPositions() {
           side: (r.posSide === 'long' ? 'long' : 'short') as 'long' | 'short',
           /** 杠杆倍数（OKX 字段 lever，为字符串，转换为 number） */
           leverage: Number(r.lever) || 0,
+          /** 保证金模式（OKX 字段 mgnMode: cross 或 isolated） */
+          mgnMode: (r.mgnMode === 'isolated' ? 'isolated' : 'cross') as 'cross' | 'isolated',
           /** 清算价（OKX 字段 liqPx） */
           liquidationPrice: Number(r.liqPx) || 0,
           contracts,
@@ -182,7 +192,7 @@ export async function setLeverage(
     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const resp = await (okx as any).privatePostAccountSetLeverage(params);
-    console.log(`[OKX] 杠杆已设置: ${instId} ${leverage}x (${posSide || 'both'})`);
+    // console.log(`[OKX] 杠杆已设置: ${instId} ${leverage}x (${posSide || 'both'})`); // ✅ 屏蔽常规日志
     return resp;
   } catch (error) {
     console.error('[OKX] 设置杠杆失败:', error);
@@ -190,6 +200,24 @@ export async function setLeverage(
     return null;
   }
 }
+
+/**
+ * OKX合约乘数映射
+ * ccxt的amount需要乘以此倍数才是实际张数
+ * 
+ * 规则：
+ * - ccxt使用币的数量（如0.01 BTC, 0.1 ETH）
+ * - OKX使用合约张数
+ * - 乘数 = 1 / (1张合约的币数量)
+ */
+const CONTRACT_MULTIPLIERS: Record<string, number> = {
+  'BTC': 100,  // 1张 = 0.01 BTC → 乘数 = 1/0.01 = 100
+  'ETH': 10,   // 1张 = 0.1 ETH → 乘数 = 1/0.1 = 10
+  'SOL': 1,    // 1张 = 1 SOL → 乘数 = 1
+  'BNB': 1,    // 1张 = 1 BNB → 乘数 = 1
+  'XRP': 0.1,  // 1张 = 10 XRP → 乘数 = 1/10 = 0.1  ✅ 修复
+  'DOGE': 0.01 // 1张 = 100 DOGE → 乘数 = 1/100 = 0.01
+};
 
 export async function placeOrder(
   symbol: string,
@@ -201,11 +229,24 @@ export async function placeOrder(
   reduceOnly?: boolean,
   tdMode: 'cross' | 'isolated' = 'cross'
 ) {
+  // 提取币种符号
+  const coin = symbol.split('/')[0];
+  const multiplier = CONTRACT_MULTIPLIERS[coin] || 1;
+  
+  // 🔧 关键修复：ccxt的amount需要乘以合约乘数
+  const ccxtAmount = amount * multiplier;
+  
+  console.log(`[placeOrder] ${reduceOnly ? '平仓' : '开仓'}: ${coin} ${side} ${amount.toFixed(8)}张 (ccxt: ${ccxtAmount.toFixed(8)})`);
+  
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: Record<string, any> = { tdMode };
-  if (posSide) params.posSide = posSide; // 对冲模式必须提供
-  if (reduceOnly) params.reduceOnly = true; // 仅平仓
-  const order = await okx.createOrder(symbol, type, side, amount, price, params);
+  if (posSide) params.posSide = posSide;
+  if (reduceOnly) params.reduceOnly = true;
+  
+  const order = await okx.createOrder(symbol, type, side, ccxtAmount, price, params);
+  
+  console.log(`[placeOrder] ✅ 订单已下: ID=${order.id}`);
+  
   return order;
 }
 
@@ -216,6 +257,7 @@ export async function placeOrder(
  * @param size 数量（张数）
  * @param tpPrice 止盈价格（可选）
  * @param slPrice 止损价格（可选）
+ * @param tdMode 保证金模式（默认cross）
  * @returns 条件单结果
  */
 export async function placeTPSL(
@@ -223,21 +265,36 @@ export async function placeTPSL(
   posSide: 'long' | 'short',
   size: number,
   tpPrice?: number,
-  slPrice?: number
+  slPrice?: number,
+  tdMode: 'cross' | 'isolated' = 'cross'
 ) {
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const results: any[] = [];
     
-    // OKX要求张数必须为整数，向下取整
-    const sizeInt = Math.floor(size);
+    // ⚠️ 条件单(algo order)对lot size要求严格
+    // 不同币种的lot size不同，为了兼容性，根据币种调整精度
+    let sizeRounded: number;
     
-    if (sizeInt < 1) {
-      console.warn('[OKX] 止盈止损单数量不足1张，跳过');
+    // 根据币种确定lot size（基于OKX规则）
+    if (instId.startsWith('BTC')) {
+      // BTC: lot size = 1（只能整数张）
+      sizeRounded = Math.floor(size);
+    } else if (instId.startsWith('ETH')) {
+      // ETH: lot size = 0.1 或 1（取整到整数）
+      sizeRounded = Math.floor(size);
+    } else {
+      // 其他币种：保留2位小数（常见的lot size倍数）
+      sizeRounded = Math.floor(size * 100) / 100;
+    }
+    
+    if (sizeRounded < 1) {
+      console.warn(`[OKX] ⚠️ 止盈止损单数量不足1张（原始:${size.toFixed(8)}，调整后:${sizeRounded}）`);
+      console.warn(`[OKX] 💡 建议：增加仓位大小到至少能买1张合约，或在OKX手动设置止盈止损`);
       return results;
     }
     
-    console.log(`[OKX] 准备下止盈止损单: ${instId}, 数量=${sizeInt}张, TP=${tpPrice}, SL=${slPrice}`);
+    // console.log(`[OKX] 准备下止盈止损单: ${instId}, 原始数量=${size.toFixed(8)}, 调整后=${sizeRounded}张, 模式=${tdMode}, TP=${tpPrice}, SL=${slPrice}`); // ✅ 屏蔽详细日志
     
     // 止盈单
     if (tpPrice) {
@@ -245,16 +302,16 @@ export async function placeTPSL(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const tpOrder = await (okx as any).privatePostTradeOrderAlgo({
           instId,
-          tdMode: 'cross',
+          tdMode: tdMode, // ✅ 使用传入的保证金模式
           side: posSide === 'long' ? 'sell' : 'buy',
           posSide,
           ordType: 'conditional', // 条件单
-          sz: String(sizeInt), // 必须是整数张数
+          sz: String(sizeRounded), // 支持小数张数
           tpTriggerPx: String(tpPrice),
           tpOrdPx: '-1', // -1表示市价
         });
         results.push({ type: 'TP', price: tpPrice, order: tpOrder });
-        console.log('[OKX] ✅ 止盈单已下:', tpPrice, '数量:', sizeInt);
+        console.log(`[OKX] ✅ 止盈单: TP=${tpPrice}`);
       } catch (tpError) {
         console.error('[OKX] ❌ 止盈单失败:', tpError);
         // 继续尝试止损单
@@ -267,16 +324,16 @@ export async function placeTPSL(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const slOrder = await (okx as any).privatePostTradeOrderAlgo({
           instId,
-          tdMode: 'cross',
+          tdMode: tdMode, // ✅ 使用传入的保证金模式
           side: posSide === 'long' ? 'sell' : 'buy',
           posSide,
           ordType: 'conditional', // 条件单
-          sz: String(sizeInt), // 必须是整数张数
+          sz: String(sizeRounded), // 支持小数张数
           slTriggerPx: String(slPrice),
           slOrdPx: '-1', // -1表示市价
         });
         results.push({ type: 'SL', price: slPrice, order: slOrder });
-        console.log('[OKX] ✅ 止损单已下:', slPrice, '数量:', sizeInt);
+        console.log(`[OKX] ✅ 止损单: SL=${slPrice}`);
       } catch (slError) {
         console.error('[OKX] ❌ 止损单失败:', slError);
       }

@@ -278,11 +278,11 @@ export default function EquityChart() {
 
   /**
    * 轮询与请求控制
-   * @remarks POLL_MS 兜底为 3000ms（当环境变量缺失或非法时），AbortController 用于避免并发请求堆积。
+   * @remarks POLL_MS 默认60000ms（1分钟），与后端采集频率同步。可通过环境变量NEXT_PUBLIC_EQUITY_POLL_MS覆盖。
    */
   const POLL_MS = useMemo(() => {
     const v = Number(process.env.NEXT_PUBLIC_EQUITY_POLL_MS);
-    return Number.isFinite(v) && v >= 500 ? v : 3000;
+    return Number.isFinite(v) && v >= 500 ? v : 60000; // ✅ 改为1分钟
   }, []);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -292,23 +292,12 @@ export default function EquityChart() {
    */
   const load = async () => {
     /**
-     * 刷新流程（每 3 秒）：
-     * 1) 先触发后端快照 `/api/equity/snapshot`，由服务器请求 OKX 并写入数据库；
-     * 2) 再拉取最近 72 小时时间序列 `/api/equity`，追加时间戳参数 `_` 避免缓存。
-     * @remarks 使用 AbortController 取消上一轮数据拉取，避免并发堆积；快照失败时仍会继续拉取旧数据以保证页面可用。
+     * 刷新流程（每 1 分钟）：
+     * 从数据库读取最近 72 小时的总资产时间序列并更新图表
+     * @remarks 后端scheduler负责采集OKX数据，前端只负责显示数据库中的数据
      */
     try {
-      // 触发后端快照（OKX -> DB），不使用全局 abort，以免影响后续拉取
-      try {
-        const acSnap = new AbortController();
-        await fetch('/api/equity/snapshot', { method: 'POST', signal: acSnap.signal });
-      } catch (snapErr) {
-        // 快照失败不影响后续拉取，仅记录
-        // eslint-disable-next-line no-console
-        console.warn('[EquityChart] snapshot failed (will still fetch series)', snapErr);
-      }
-
-      // 拉取时间序列
+      // 拉取时间序列（仅读取数据库，不触发OKX API调用）
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
@@ -424,7 +413,7 @@ export default function EquityChart() {
     setHover(null);
   }
 
-  /** 拉取主流币价格（每 3 秒） */
+  /** 拉取主流币价格（每 1 分钟，与总资产同步） */
   useEffect(() => {
     let timer: any = null;
     const fetchPrices = async () => {
@@ -437,7 +426,7 @@ export default function EquityChart() {
       } catch {}
     };
     fetchPrices();
-    timer = setInterval(fetchPrices, 3000);
+    timer = setInterval(fetchPrices, 60000); // ✅ 改为1分钟
     return () => { if (timer) clearInterval(timer); };
   }, []);
 
@@ -565,7 +554,7 @@ export default function EquityChart() {
             </div>
           )}
           <div style={{ position: 'absolute', bottom: 8, left: 8 }}>
-            <Text style={{ color: '#6b7280', fontSize: 12 }}>最近 72 小时 · 每 3 秒刷新</Text>
+            <Text style={{ color: '#6b7280', fontSize: 12 }}>最近 72 小时 · 每 1 分钟刷新</Text>
           </div>
         </div>
       )}
