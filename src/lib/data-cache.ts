@@ -7,6 +7,7 @@
 import { queryPrices, queryIndicators3m, queryLatestFundingRate, queryLatestOpenInterest } from './db';
 import { fetchCandles, fetchTickers, fetchFundingRate, fetchOpenInterest } from './okx';
 import { ema, macd, rsi, atr, midPrices } from './indicators';
+import { CACHE_CONFIG } from './constants';
 
 /**
  * 缓存的市场数据
@@ -23,7 +24,6 @@ interface CachedMarketData {
 }
 
 let cachedData: CachedMarketData | null = null;
-const CACHE_TTL = 60 * 1000; // 缓存1分钟
 
 /**
  * 获取市场数据（优先使用缓存）
@@ -32,7 +32,7 @@ export async function getMarketData(instIds: string[], forceRefresh = false): Pr
   const now = Date.now();
   
   // 如果缓存有效且不强制刷新，返回缓存
-  if (!forceRefresh && cachedData && (now - cachedData.timestamp) < CACHE_TTL) {
+  if (!forceRefresh && cachedData && (now - cachedData.timestamp) < CACHE_CONFIG.DATA_TTL) {
     console.log('[DataCache] 使用缓存数据，缓存时长:', Math.floor((now - cachedData.timestamp) / 1000), '秒');
     return cachedData;
   }

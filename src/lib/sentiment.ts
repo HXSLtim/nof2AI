@@ -4,8 +4,12 @@
  * 使用 CryptoOracle API 获取市场情绪数据
  */
 
-const API_URL = "https://service.cryptoracle.network/openapi/v2/endpoint";
-const API_KEY = "7ad48a56-8730-4238-a714-eebc30834e3e";
+const API_URL = process.env.CRYPTO_ORACLE_API_URL || "https://service.cryptoracle.network/openapi/v2/endpoint";
+const API_KEY = process.env.CRYPTO_ORACLE_API_KEY || "7ad48a56-8730-4238-a714-eebc30834e3e";
+
+if (!process.env.CRYPTO_ORACLE_API_KEY) {
+  console.warn('[Sentiment] ⚠️ 使用默认的 CryptoOracle API Key，建议在环境变量中配置 CRYPTO_ORACLE_API_KEY');
+}
 
 /**
  * 情绪指标结果

@@ -54,8 +54,47 @@
   - 文档建设的原则和最佳实践
   - 文档效果评估和未来规划
 
-### 📁 归档文档 ([archive/](./archive/))
-历史文档和修复记录的集中存储位置。
+### 📁 配置文档 ([config/](./config/))
+系统配置和设置相关文档。
+- [`CONFIGURATION.md`](./config/CONFIGURATION.md) - 系统配置详细说明
+- [`OKX_CONFIG.md`](./config/OKX_CONFIG.md) - OKX交易所配置指南
+
+### 🚀 功能特性文档 ([features/](./features/))
+系统功能特性和增强模块文档。
+- [`DEBUG_LOGGING_ENHANCEMENT.md`](./features/DEBUG_LOGGING_ENHANCEMENT.md) - 调试日志增强功能
+- [`POSITION_FEATURES_COMPLETE.md`](./features/POSITION_FEATURES_COMPLETE.md) - 仓位管理功能完成报告
+- [`UI_OPTIMIZATION_COMPLETE.md`](./features/UI_OPTIMIZATION_COMPLETE.md) - 用户界面优化完成报告
+
+### 🔧 修复记录文档 ([fixes/](./fixes/))
+2025-11-04 系统修复期的完整记录。
+- [`PROJECT_MEMORY.md`](./fixes/PROJECT_MEMORY.md) - 🧠 项目记忆和修复历史（核心文档）
+- [`COMPREHENSIVE_FIX_REPORT.md`](./fixes/COMPREHENSIVE_FIX_REPORT.md) - 📊 综合修复报告
+- [`CRITICAL_FIX_CLOSE_POSITION.md`](./fixes/CRITICAL_FIX_CLOSE_POSITION.md) - 🚨 平仓功能关键修复
+- [`ULTIMATE_CLOSE_POSITION_FIX.md`](./fixes/ULTIMATE_CLOSE_POSITION_FIX.md) - 🔧 平仓功能终极修复
+
+#### 📖 快速参考 ([fixes/](./fixes/))
+- [`CLOSE_FIX_V3_QUICKREF.md`](./fixes/CLOSE_FIX_V3_QUICKREF.md) - 平仓修复V3快速参考
+- [`CLOSE_POSITION_FIX_QUICKREF.md`](./fixes/CLOSE_POSITION_FIX_QUICKREF.md) - 平仓修复快速参考
+- [`QUICK_FIX_REFERENCE.md`](./fixes/QUICK_FIX_REFERENCE.md) - 快速修复参考
+
+#### 🔍 技术分析 ([fixes/](./fixes/))
+- [`OKX_API_OPTIMIZATION_ANALYSIS.md`](./fixes/OKX_API_OPTIMIZATION_ANALYSIS.md) - OKX API优化分析
+- [`CCXT_CODE_REVIEW.md`](./fixes/CCXT_CODE_REVIEW.md) - CCXT代码审查
+- [`POSITION_DIRECTION_FIX.md`](./fixes/POSITION_DIRECTION_FIX.md) - 仓位方向修复
+
+#### 📋 修复总结 ([fixes/](./fixes/))
+- [`POSITION_FIX_SUMMARY.md`](./fixes/POSITION_FIX_SUMMARY.md) - 仓位修复总结
+- [`FINAL_SUMMARY.md`](./fixes/FINAL_SUMMARY.md) - 最终修复总结
+- [`FIX_SUMMARY_FINAL.md`](./fixes/FIX_SUMMARY_FINAL.md) - 修复总结最终版
+- [`POSSIDE_FIX_COMPLETE.md`](./fixes/POSSIDE_FIX_COMPLETE.md) - posSide修复完成
+
+### 📦 归档文档 ([archive/](./archive/))
+历史文档和临时文件归档。
+
+#### 🗂️ 过时文档
+- [`LOT_SIZE_FIX.md`](./archive/LOT_SIZE_FIX.md) - 手续费修复（已归档）
+- [`README_OPTIMIZATION.md`](./archive/README_OPTIMIZATION.md) - README优化（已归档）
+- [`READY_TO_RESTART.md`](./archive/READY_TO_RESTART.md) - 重启准备（已归档）
 
 #### 🔥 关键问题 ([archive/critical/](./archive/critical/))
 - [`CRITICAL_AMOUNT_BUG.md`](./archive/critical/CRITICAL_AMOUNT_BUG.md) - 数量金额严重错误修复

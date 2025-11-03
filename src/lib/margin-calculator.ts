@@ -4,28 +4,17 @@
  * 用于准确计算OKX交易所所需的保证金和手续费，避免因资金不足导致下单失败
  */
 
-/**
- * 交易费率配置
- */
-export const TRADING_FEES = {
-  /** 开仓手续费率 */
-  MAKER: 0.0002,  // 0.02%
-  TAKER: 0.0005,  // 0.05%
-  /** 平仓手续费率（通常与开仓相同）*/
-  CLOSE: 0.0005,  // 0.05%
-} as const;
+import { TRADING_FEES, MIN_CONTRACT_SIZE } from './constants';
 
 /**
- * 最小合约张数要求
+ * 交易费率配置（从 constants 导入）
  */
-export const MIN_CONTRACT_SIZE = {
-  BTC: 1,
-  ETH: 1,
-  SOL: 1,
-  BNB: 1,
-  XRP: 1,
-  DOGE: 1,
-} as const;
+export { TRADING_FEES };
+
+/**
+ * 最小合约张数要求（从 constants 导入）
+ */
+export { MIN_CONTRACT_SIZE };
 
 /**
  * 保证金计算结果
@@ -60,15 +49,17 @@ export interface MarginCalculation {
  * 
  * @param symbol 币种符号（如 'BTC', 'ETH'）
  * @param entryPrice 入场价格
- * @param sizeUSDT 期望投入的USDT金额
+ * @param sizeUSDT 期望的名义价值（USDT金额，不是保证金！）
  * @param leverage 杠杆倍数
  * @returns 保证金计算结果
  * 
  * @example
  * ```typescript
+ * // 期望名义价值500 USDT，5x杠杆
  * const calc = calculateMarginRequirement('XRP', 2.5306, 500, 5);
- * console.log(`需要 ${calc.recommendedAmount} USDT`);
- * console.log(`合约张数: ${calc.contractSize}`);
+ * console.log(`名义价值: $${calc.notionalValue}`); // 500
+ * console.log(`所需保证金: $${calc.requiredMargin}`); // 100
+ * console.log(`合约张数: ${calc.contractSize}`); // 197.58
  * ```
  */
 export function calculateMarginRequirement(
@@ -77,15 +68,16 @@ export function calculateMarginRequirement(
   sizeUSDT: number,
   leverage: number
 ): MarginCalculation {
-  // 1. 计算可以买多少张合约
-  // 公式: 合约张数 = (USDT金额 × 杠杆) / 价格
-  const rawContractSize = (sizeUSDT * leverage) / entryPrice;
+  // 🔧 修复：sizeUSDT应该是名义价值，不是保证金！
+  // 1. sizeUSDT直接就是名义价值
+  const notionalValue = sizeUSDT;
   
-  // 2. OKX支持小数张数！保留8位小数精度（crypto标准）
+  // 2. 计算合约张数
+  // 公式: 合约张数 = 名义价值 / 价格
+  const rawContractSize = notionalValue / entryPrice;
+  
+  // 3. OKX支持小数张数！保留8位小数精度（crypto标准）
   const contractSize = Math.round(rawContractSize * 100000000) / 100000000;
-  
-  // 3. 计算实际名义价值（合约价值）
-  const notionalValue = contractSize * entryPrice;
   
   // 4. 计算所需保证金
   // 公式: 保证金 = 名义价值 / 杠杆
@@ -110,8 +102,9 @@ export function calculateMarginRequirement(
   // 8. 最终建议金额
   const recommendedAmount = totalRequired + safetyBuffer;
   
-  // 9. 检查是否满足最小合约张数（0.01张对于某些币种可能够了）
-  const minSize = 0.01; // OKX最小0.01张（大多数合约）
+  // 9. 检查是否满足最小合约张数（允许任意小数）
+  // OKX支持极小张数（如0.0001张），只要大于0即可
+  const minSize = 0.0001; // 最小0.0001张（几乎任何金额都可以）
   const meetsMinimum = contractSize >= minSize;
   
   return {
@@ -167,7 +160,7 @@ export function validateSufficientMargin(
   if (!calculation.meetsMinimum) {
     return {
       isValid: false,
-      message: `合约张数不足：计算得到 ${calculation.contractSize.toFixed(8)} 张，不满足最小要求（至少0.01张）。请增加投入金额或提高杠杆倍数。`,
+      message: `合约张数不足：计算得到 ${calculation.contractSize.toFixed(8)} 张，不满足最小要求（至少0.0001张）。请增加投入金额或提高杠杆倍数。`,
       details: {
         available: availableUSDT,
         required,
@@ -188,13 +181,13 @@ export function validateSufficientMargin(
 /**
  * 根据可用资金智能调整订单大小
  * 
- * 当请求的USDT金额超过可用资金时，自动调整为安全的最大金额
+ * 当请求的名义价值对应的保证金超过可用资金时，自动调整为安全的最大名义价值
  * 
  * @param symbol 币种符号
  * @param entryPrice 入场价格
- * @param requestedUSDT 请求的USDT金额
+ * @param requestedUSDT 请求的名义价值（USDT）
  * @param leverage 杠杆倍数
- * @param availableUSDT 可用USDT金额
+ * @param availableUSDT 可用保证金（USDT）
  * @returns 调整后的计算结果，如果无法满足则返回null
  */
 export function adjustOrderToAvailableFunds(
@@ -224,7 +217,7 @@ export function adjustOrderToAvailableFunds(
     const mid = (low + high) / 2;
     calculation = calculateMarginRequirement(symbol, entryPrice, mid, leverage);
     
-    if (availableUSDT >= calculation.recommendedAmount && calculation.contractSize >= 0.01) {
+    if (availableUSDT >= calculation.recommendedAmount && calculation.contractSize >= 0.0001) {
       // 找到可行解，尝试找更大的
       bestCalculation = calculation;
       low = mid;
@@ -239,24 +232,25 @@ export function adjustOrderToAvailableFunds(
     }
   }
   
-  if (bestCalculation && bestCalculation.contractSize >= 0.01) {
+  if (bestCalculation && bestCalculation.contractSize >= 0.0001) {
     console.log(`[adjustOrderToAvailableFunds] 调整成功: ${requestedUSDT} → ${bestCalculation.actualUSDT.toFixed(2)} USDT`);
     return bestCalculation;
   }
   
-  console.log(`[adjustOrderToAvailableFunds] 调整失败: 即使使用全部可用资金也无法满足最小合约张数要求（0.01张）`);
+  console.log(`[adjustOrderToAvailableFunds] 调整失败: 即使使用全部可用资金也无法满足最小合约张数要求（0.0001张）`);
   return null;
 }
 
 /**
  * 格式化保证金计算结果为人类可读的字符串
  */
-export function formatMarginCalculation(calc: MarginCalculation, symbol: string): string {
+export function formatMarginCalculation(calc: MarginCalculation, symbol: string, leverage?: number): string {
+  const leverageInfo = leverage ? `杠杆: ${leverage}x\n` : '';
   return `
 【保证金计算结果】
 币种: ${symbol}
-合约张数: ${calc.contractSize} 张
-名义价值: $${calc.notionalValue.toFixed(2)}
+名义价值: $${calc.notionalValue.toFixed(2)} (输入)
+${leverageInfo}合约张数: ${calc.contractSize} 张
 所需保证金: $${calc.requiredMargin.toFixed(2)}
 开仓手续费: $${calc.openFee.toFixed(4)}
 平仓手续费(预留): $${calc.closeFee.toFixed(4)}

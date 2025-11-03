@@ -1,6 +1,7 @@
-import { insertEquity } from '@/lib/db';
+import { insertEquity, getDb } from '@/lib/db';
 import { fetchAccountTotal } from '@/lib/okx';
 import { collectAllData, cleanupOldData } from '@/lib/data-collector';
+import { SCHEDULER_CONFIG } from './constants';
 
 declare global {
   // eslint-disable-next-line no-var
@@ -17,6 +18,10 @@ declare global {
   var __aiDecisionSchedulerStarted: boolean | undefined;
   // eslint-disable-next-line no-var
   var __aiDecisionTimer: NodeJS.Timeout | undefined;
+  // eslint-disable-next-line no-var
+  var __reflectionSchedulerStarted: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __reflectionTimer: NodeJS.Timeout | undefined;
 }
 
 /**
@@ -33,9 +38,9 @@ export function startEquityScheduler() {
 
   /**
    * 采集间隔（毫秒）
-   * @remarks 默认 60000ms（1分钟）；可通过环境变量 `EQUITY_SCHEDULER_MS` 覆盖
+   * @remarks 默认从 SCHEDULER_CONFIG 读取；可通过环境变量 `EQUITY_SCHEDULER_MS` 覆盖
    */
-  const intervalMs = Number(process.env.EQUITY_SCHEDULER_MS || 60000); // 60000ms = 1分钟
+  const intervalMs = Number(process.env.EQUITY_SCHEDULER_MS || SCHEDULER_CONFIG.EQUITY_INTERVAL);
 
   /**
    * 执行一次采集并计划下一次，避免并发与时间漂移。
@@ -73,8 +78,8 @@ export function startDataCollector() {
   if (process.env.DATA_COLLECTOR_ENABLED === 'false') return;
   global.__dataCollectorStarted = true;
 
-  // 采集间隔（默认3分钟）
-  const intervalMs = Number(process.env.DATA_COLLECTOR_MS || 180000);
+  // 采集间隔（默认从配置读取）
+  const intervalMs = Number(process.env.DATA_COLLECTOR_MS || SCHEDULER_CONFIG.DATA_COLLECTOR_INTERVAL);
 
   const loop = async () => {
     const started = Date.now();
@@ -102,7 +107,7 @@ export function startCleanupScheduler() {
   if (global.__cleanupSchedulerStarted) return;
   global.__cleanupSchedulerStarted = true;
 
-  const daysToKeep = Number(process.env.DATA_CLEANUP_DAYS || 7);
+  const daysToKeep = Number(process.env.DATA_CLEANUP_DAYS || SCHEDULER_CONFIG.DATA_RETENTION_DAYS);
   const intervalMs = 24 * 3600 * 1000; // 每天一次
 
   const loop = () => {
@@ -133,7 +138,7 @@ export function startAIDecisionScheduler() {
   if (process.env.AI_DECISION_ENABLED === 'false') return;
   global.__aiDecisionSchedulerStarted = true;
 
-  const intervalMs = Number(process.env.AI_DECISION_INTERVAL_MS || 300000); // 默认5分钟
+  const intervalMs = Number(process.env.AI_DECISION_INTERVAL_MS || SCHEDULER_CONFIG.AI_DECISION_INTERVAL);
   const autoExecute = process.env.AI_AUTO_EXECUTE === 'true';
 
   console.log('[ai-decision-scheduler] 已启动');
@@ -147,121 +152,160 @@ export function startAIDecisionScheduler() {
     const started = Date.now();
     try {
       invocationCount++;
-      console.log(`[ai-decision-scheduler] 第 ${invocationCount} 次调用，交易时长: ${Math.floor((started - tradingStartTime) / 60000)} 分钟`);
+      console.log(`[ai-decision-scheduler] 🔄 第 ${invocationCount} 次调用，单币种模式`);
 
       // 动态导入避免循环依赖
-      const { composePrompt, parseDecisionsFromText } = await import('./ai-trading-prompt');
-      const { insertDecision, updateDecisionStatusInDb } = await import('./db');
+      const { composePrompt, parseDecisionFromText } = await import('./ai-trading-prompt');
+      const { insertDecision, getEnabledCoins } = await import('./db');
 
-      // 1. 获取市场数据
-      const promptRes = await fetch(`http://localhost:${process.env.PORT || 3000}/api/ai/prompt`, { cache: 'no-store' });
-      const promptJson = await promptRes.json();
+      // 从数据库读取启用的币种（前后端同步）
+      const enabledCoins = getEnabledCoins();
+      console.log(`[ai-decision-scheduler] 启用的币种: ${enabledCoins.join(', ')}`);
       
-      if (!promptJson.success || !promptJson.prompt) {
-        throw new Error('获取市场数据失败');
-      }
-
-      // 2. 组装提示词
+      const allDecisions: any[] = [];
       const tradingMinutes = Math.floor((started - tradingStartTime) / 60000);
-      const prompt = composePrompt(promptJson.prompt, invocationCount, tradingMinutes);
-
-      // 3. 调用AI服务
-      const aiRes = await fetch(`http://localhost:${process.env.PORT || 3000}/api/ai/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: [{ role: 'user', content: prompt }] })
-      });
-
-      const aiJson = await aiRes.json();
       
-      if (!aiJson.ok || !aiJson.content) {
-        throw new Error(aiJson.error || 'AI决策失败');
-      }
-
-      const aiReply = aiJson.content;
-
-      // 4. 解析决策
-      const decisions = parseDecisionsFromText(aiReply);
-      console.log('[ai-decision-scheduler] 解析到', decisions.length, '个决策');
-
-      // 5. 处理每个决策
-      for (const decision of decisions) {
-        const decisionId = 'auto-' + Date.now() + Math.random().toString(16).slice(2);
+      // 🔧 单币种模式：只分析启用的币种
+      for (let i = 0; i < enabledCoins.length; i++) {
+        const coin = enabledCoins[i];
         
-        if (decision.action !== 'HOLD') {
-          console.log(`[ai-decision-scheduler] 交易决策: ${decision.symbol} ${decision.action}`);
+        // 🔧 每次分析前重新获取总资产（反映之前交易的影响）
+        let currentTotal = 0;
+        try {
+          const equityRes = await fetch(`http://localhost:${process.env.PORT || 3000}/api/equity?hours=1&_=${Date.now()}`, { cache: 'no-store' });
+          const equityData = await equityRes.json();
+          if (equityData.success && equityData.data && equityData.data.length > 0) {
+            currentTotal = equityData.data[equityData.data.length - 1].total;
+          }
+        } catch {
+          console.warn(`[ai-decision-scheduler] 无法获取总资产`);
+        }
+        
+        console.log(`[ai-decision-scheduler] [${i + 1}/${enabledCoins.length}] ${coin} (总资产: $${currentTotal.toFixed(2)})`);
+        
+        try {
+          // 1. 获取该币种的市场数据（包含最新的可用资金）
+          const promptRes = await fetch(`http://localhost:${process.env.PORT || 3000}/api/ai/prompt?symbol=${coin}&_=${Date.now()}`, { cache: 'no-store' });
+          const promptJson = await promptRes.json();
           
-          const title = `🤖 自动 - ${decision.action} ${decision.symbol} (置信度: ${decision.confidence}%)`;
-          const desc = `${decision.reasoning}\n\n决策详情：\n- 币种: ${decision.symbol}\n- 杠杆: ${decision.leverage || 5}x\n- 止盈: ${decision.takeProfit || 'N/A'}\n- 止损: ${decision.stopLoss || 'N/A'}`;
+          if (!promptJson.success || !promptJson.prompt) {
+            console.warn(`[ai-decision-scheduler] ${coin} 数据获取失败`);
+            continue;
+          }
+
+          // 2. 组装提示词
+          const prompt = composePrompt(promptJson.prompt, invocationCount, tradingMinutes);
+
+          // 3. 调用AI服务
+          const aiRes = await fetch(`http://localhost:${process.env.PORT || 3000}/api/ai/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messages: [{ role: 'user', content: prompt }] })
+          });
+
+          const aiJson = await aiRes.json();
           
-          // 如果启用自动执行
-          if (autoExecute) {
-            try {
-              const execRes = await fetch(`http://localhost:${process.env.PORT || 3000}/api/ai/execute-decision`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ decision })
-              });
+          if (!aiJson.ok || !aiJson.content) {
+            console.warn(`[ai-decision-scheduler] ${coin} AI决策失败`);
+            continue;
+          }
 
-              const execResult = await execRes.json();
+          const aiReply = aiJson.content;
 
-              if (execResult.success) {
-                insertDecision({
-                  id: decisionId,
-                  title,
-                  desc: desc + `\n\n✅ 已自动执行 - 订单ID: ${execResult.order?.orderId}`,
-                  ts: Date.now(),
-                  status: 'approved',
-                  prompt,
-                  reply: aiReply
-                });
-                console.log(`✅ [ai-decision-scheduler] 已执行: ${title}`);
+          // 4. 解析并立即处理决策
+          const decision = parseDecisionFromText(aiReply);
+          if (decision) {
+            console.log(`[ai-decision-scheduler] ${coin}: ${decision.action} (${decision.confidence}%)`);
+            
+            // 🔧 立即处理决策（不等其他币种）
+            const decisionId = 'auto-' + Date.now() + '-' + coin + '-' + Math.random().toString(16).slice(2);
+            
+            if (decision.action !== 'HOLD') {
+              // 交易决策 - 立即执行
+              const title = `[自动] ${decision.action} ${decision.symbol} (${decision.confidence}%)`;
+              const desc = `${decision.reasoning}\n\n决策详情：\n- 操作: ${decision.action}\n- 币种: ${decision.symbol}\n- 杠杆: ${decision.leverage || 5}x`;
+              
+              if (autoExecute) {
+                try {
+                  // 🔧 先插入决策记录（反思需要依赖这个ID）
+                  insertDecision({
+                    id: decisionId,
+                    title,
+                    desc,
+                    ts: Date.now(),
+                    status: 'pending',
+                    prompt,
+                    reply: aiReply
+                  });
+                  
+                  const execRes = await fetch(`http://localhost:${process.env.PORT || 3000}/api/ai/execute-decision`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                      decision,
+                      decisionId  // 🔧 传递decisionId用于反思记录
+                    })
+                  });
+
+                  const execResult = await execRes.json();
+
+                  if (execResult.success) {
+                    // 更新决策状态为已批准
+                    const updateStmt = getDb().prepare('UPDATE decisions SET status = ?, desc = ? WHERE id = ?');
+                    updateStmt.run('approved', desc + `\n\n已执行 - ID: ${execResult.order?.orderId}`, decisionId);
+                    console.log(`[执行成功] ${coin} ${decision.action} - ID: ${execResult.order?.orderId}`);
+                  } else {
+                    // 更新决策状态为拒绝
+                    const updateStmt = getDb().prepare('UPDATE decisions SET status = ?, title = ?, desc = ? WHERE id = ?');
+                    updateStmt.run('rejected', title + ' (失败)', desc + `\n\n执行失败: ${execResult.error}`, decisionId);
+                    console.error(`[执行失败] ${coin} - ${execResult.error}`);
+                  }
+                } catch (error) {
+                  console.error(`[执行异常] ${coin}:`, error);
+                  // 更新决策状态为拒绝
+                  try {
+                    const updateStmt = getDb().prepare('UPDATE decisions SET status = ?, title = ? WHERE id = ?');
+                    updateStmt.run('rejected', title + ' (异常)', decisionId);
+                  } catch {}
+                }
               } else {
                 insertDecision({
                   id: decisionId,
-                  title: title + ' (执行失败)',
-                  desc: desc + `\n\n❌ 执行失败：${execResult.error}`,
+                  title,
+                  desc,
                   ts: Date.now(),
-                  status: 'rejected',
+                  status: 'pending',
                   prompt,
                   reply: aiReply
                 });
-                console.error(`❌ [ai-decision-scheduler] 执行失败: ${execResult.error}`);
               }
-            } catch (error) {
-              console.error('[ai-decision-scheduler] 执行异常:', error);
+            } else {
+              // HOLD决策 - 记录
+              insertDecision({
+                id: decisionId,
+                title: `[自动] HOLD - ${coin}`,
+                desc: decision.reasoning,
+                ts: Date.now(),
+                status: 'approved',
+                prompt,
+                reply: aiReply
+              });
             }
-          } else {
-            // 不自动执行，保存为待处理
-            insertDecision({
-              id: decisionId,
-              title,
-              desc,
-              ts: Date.now(),
-              status: 'pending',
-              prompt,
-              reply: aiReply
-            });
-            console.log(`[ai-decision-scheduler] 已保存待处理: ${title}`);
+            
+            // 延迟避免数据库冲突
+            await new Promise(resolve => setTimeout(resolve, 100));
           }
-        } else {
-          // HOLD决策
-          insertDecision({
-            id: decisionId,
-            title: `🤖 自动 - HOLD - ${decision.symbol}`,
-            desc: decision.reasoning,
-            ts: Date.now(),
-            status: 'approved',
-            prompt,
-            reply: aiReply
-          });
+          
+          // 延迟避免API限流（分析下一个币种前）
+          if (i < enabledCoins.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        } catch (error) {
+          console.error(`[ai-decision-scheduler] ${coin} 处理失败:`, error);
         }
-        
-        // 延迟避免冲突
-        await new Promise(resolve => setTimeout(resolve, 100));
       }
 
-      console.log('[ai-decision-scheduler] 决策处理完成');
+      console.log('[ai-decision-scheduler] 所有币种处理完成');
 
     } catch (e) {
       console.error('[ai-decision-scheduler] failed', e);
@@ -274,4 +318,40 @@ export function startAIDecisionScheduler() {
 
   // 延迟30秒后首次执行（等待服务启动完成）
   setTimeout(loop, 30000);
+}
+
+/**
+ * 启动交易反思自动更新调度器
+ * - 默认每5分钟检查一次是否有被止损/止盈的仓位需要记录
+ * - 自动从OKX获取历史盈亏数据并更新反思记录
+ * - 可通过环境变量 REFLECTION_SCHEDULER_ENABLED=false 禁用
+ * - 可通过环境变量 REFLECTION_SCHEDULER_MS 自定义间隔（默认300000=5分钟）
+ */
+export function startReflectionScheduler() {
+  if (global.__reflectionSchedulerStarted) return;
+  if (process.env.REFLECTION_SCHEDULER_ENABLED === 'false') return;
+  global.__reflectionSchedulerStarted = true;
+
+  const intervalMs = Number(process.env.REFLECTION_SCHEDULER_MS || SCHEDULER_CONFIG.AI_DECISION_INTERVAL); // 默认5分钟
+
+  console.log('[reflection-scheduler] 已启动');
+  console.log('[reflection-scheduler] 间隔:', intervalMs / 1000, '秒');
+
+  const loop = async () => {
+    const started = Date.now();
+    try {
+      // 动态导入避免循环依赖
+      const { autoUpdateTradeOutcomes } = await import('./trade-reflection');
+      await autoUpdateTradeOutcomes();
+    } catch (e) {
+      console.error('[reflection-scheduler] failed', e);
+    } finally {
+      const elapsed = Date.now() - started;
+      const wait = Math.max(1000, intervalMs - elapsed);
+      global.__reflectionTimer = setTimeout(loop, wait);
+    }
+  };
+
+  // 延迟1分钟后首次执行（等待服务启动完成）
+  setTimeout(loop, 60000);
 }

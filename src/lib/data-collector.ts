@@ -17,18 +17,12 @@ import {
   insertFundingRate, 
   insertOpenInterest 
 } from './db';
+import { SUPPORTED_INSTRUMENTS } from './constants';
 
 /**
- * 支持的交易对列表
+ * 支持的交易对列表（从 constants 导入）
  */
-export const SUPPORTED_INSTRUMENTS = [
-  'BTC-USDT-SWAP',
-  'ETH-USDT-SWAP',
-  'SOL-USDT-SWAP',
-  'BNB-USDT-SWAP',
-  'XRP-USDT-SWAP',
-  'DOGE-USDT-SWAP'
-];
+export { SUPPORTED_INSTRUMENTS };
 
 /**
  * 采集单个币种的数据并计算指标

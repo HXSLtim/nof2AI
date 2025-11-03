@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { Typography, List, Tag, Space, Button, Modal, Empty, App, Switch, Alert, InputNumber } from 'antd';
 import { getDecisions, subscribeDecisions, Decision, updateDecisionStatus, publishDecision } from '@/lib/decisions';
-import { composePrompt, parseDecisionFromText, parseDecisionsFromText } from '@/lib/ai-trading-prompt';
+import { composePrompt, parseDecisionFromText, parseDecisionsFromText, ParsedDecision } from '@/lib/ai-trading-prompt';
 
 const { Text, Paragraph } = Typography;
 
@@ -24,6 +24,16 @@ export default function DecisionHistory() {
   const [intervalSeconds, setIntervalSeconds] = useState(180);
   const [invocationCount, setInvocationCount] = useState(0);
   const [tradingStartTime, setTradingStartTime] = useState(Date.now());
+  
+  // 🔧 币种交易开关
+  const [coinToggles, setCoinToggles] = useState<Record<string, boolean>>({
+    'BTC': true,
+    'ETH': true,
+    'SOL': true,
+    'BNB': true,
+    'XRP': true,
+    'DOGE': true
+  });
   
   // 客户端挂载后从 localStorage 读取
   useEffect(() => {
@@ -48,6 +58,33 @@ export default function DecisionHistory() {
         localStorage.setItem('ai_trading_start_time', String(now));
         setTradingStartTime(now);
       }
+      
+      // 从数据库读取币种开关（优先）
+      fetch('/api/config/coins')
+        .then(r => r.json())
+        .then(data => {
+          if (data.success && data.enabledCoins) {
+            const toggles: Record<string, boolean> = {
+              'BTC': false, 'ETH': false, 'SOL': false,
+              'BNB': false, 'XRP': false, 'DOGE': false
+            };
+            data.enabledCoins.forEach((coin: string) => {
+              toggles[coin] = true;
+            });
+            setCoinToggles(toggles);
+          }
+        })
+        .catch(() => {
+          // 数据库读取失败，尝试localStorage
+          const savedToggles = localStorage.getItem('ai_coin_toggles');
+          if (savedToggles) {
+            try {
+              setCoinToggles(JSON.parse(savedToggles));
+            } catch {
+              // 使用默认值
+            }
+          }
+        });
     }
   }, []);
   
@@ -65,7 +102,7 @@ export default function DecisionHistory() {
       if (!hasSetBefore && autoExecute) {
         // 首次访问且默认开启，提示用户
         setTimeout(() => {
-          message.info('⚠️ 自动执行已默认开启，AI决策将自动下单。可在面板中关闭。', 8);
+          message.info('自动执行已默认开启，AI决策将自动下单。可在面板中关闭。', 8);
         }, 2000);
       }
     }
@@ -126,9 +163,45 @@ export default function DecisionHistory() {
     }
     
     if (checked) {
-      message.warning('⚠️ 自动执行已开启！AI决策将自动下单，请谨慎使用', 5);
+      message.warning('警告: 自动执行已开启！AI决策将自动下单，请谨慎使用', 5);
     } else {
       message.info('自动执行已关闭');
+    }
+  };
+  
+  /**
+   * 切换币种交易开关
+   */
+  const toggleCoin = async (coin: string, checked: boolean) => {
+    const newToggles = { ...coinToggles, [coin]: checked };
+    setCoinToggles(newToggles);
+    
+    // 保存到数据库（前后端同步）
+    const enabledCoins = Object.keys(newToggles).filter(c => newToggles[c]);
+    
+    // 立即保存到localStorage（备份）
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('ai_coin_toggles', JSON.stringify(newToggles));
+    }
+    
+    try {
+      const res = await fetch('/api/config/coins', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabledCoins })
+      });
+      
+      const data = await res.json();
+      
+      if (data.success) {
+        console.log('[toggleCoin] 数据库保存成功:', enabledCoins);
+        message.success(`${coin} ${checked ? '已启用' : '已禁用'}（后端已同步）`, 2);
+      } else {
+        throw new Error(data.error || '保存失败');
+      }
+    } catch (error: any) {
+      message.error(`配置保存失败: ${error.message}`);
+      console.error('[toggleCoin] 保存到数据库失败:', error);
     }
   };
 
@@ -146,48 +219,219 @@ export default function DecisionHistory() {
 
   /**
    * 生成AI决策（手动或自动触发）
+   * @param isManual 是否手动触发
+   * @param singleCoinMode 是否启用单币种模式（分6次请求）
    */
-  const generateAIDecision = async (isManual = true) => {
+  const generateAIDecision = async (isManual = true, singleCoinMode = true) => {
     if (isManual) setTesting(true);
     
     try {
-      if (isManual) message.info('正在获取市场数据...');
-      
-      // 1. 获取市场数据提示词
-      const res1 = await fetch('/api/ai/prompt', { cache: 'no-store' });
-      const json1 = await res1.json();
-      if (!json1.success || !json1.prompt) {
-        throw new Error('获取市场数据失败');
-      }
-      
-      if (isManual) message.info('正在请求AI决策...');
-      
-      // 2. 组装完整提示词
-      const marketData = json1.prompt;
+      const coins = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE'];
       const newCount = invocationCount + 1;
       const tradingMinutes = Math.floor((Date.now() - tradingStartTime) / 60000);
-      const prompt = composePrompt(marketData, newCount, tradingMinutes);
       
-      // 3. 调用AI服务
-      const res2 = await fetch('/api/ai/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          messages: [{ role: 'user', content: prompt }] 
-        })
-      });
+      let parsedDecisions: ReturnType<typeof parseDecisionsFromText> = [];
+      let prompt = '';
+      let aiReply = '';
       
-      const json2 = await res2.json();
-      if (!json2.ok || !json2.content) {
-        throw new Error(json2.error || 'AI决策失败');
+      if (singleCoinMode) {
+        // 🔧 单币种模式：分6次请求，每次分析1个币种
+        const enabledCoins = coins.filter(coin => coinToggles[coin]);
+        console.log(`[DecisionHistory] 🔄 单币种模式：分析${enabledCoins.length}个启用的币种 (${enabledCoins.join(', ')})`);
+        if (isManual) message.info(`单币种模式：正在分析${enabledCoins.length}个启用的币种...`);
+        
+        for (let i = 0; i < enabledCoins.length; i++) {
+          const coin = enabledCoins[i];
+          
+          // 🔧 每次分析前重新获取可用资金（反映之前交易的影响）
+          let currentCash = 0;
+          try {
+            const cashRes = await fetch('/api/equity?hours=1&_=' + Date.now(), { cache: 'no-store' });
+            const cashData = await cashRes.json();
+            if (cashData.success && cashData.data && cashData.data.length > 0) {
+              currentCash = cashData.data[cashData.data.length - 1].total;
+            }
+          } catch {
+            console.warn(`[DecisionHistory] 无法获取可用资金`);
+          }
+          
+          console.log(`[DecisionHistory] ${i + 1}/${enabledCoins.length}: ${coin} (总资产: $${currentCash.toFixed(2)})`);
+          
+          try {
+            // 1. 获取该币种的市场数据（会包含最新的可用资金）
+            const res1 = await fetch(`/api/ai/prompt?symbol=${coin}&_=${Date.now()}`, { cache: 'no-store' });
+            const json1 = await res1.json();
+            if (!json1.success || !json1.prompt) {
+              console.warn(`[DecisionHistory] ${coin} 数据获取失败`);
+              continue;
+            }
+            
+            // 2. 组装提示词
+            const marketData = json1.prompt;
+            const prompt = composePrompt(marketData, newCount, tradingMinutes);
+            
+            // 3. 调用AI服务
+            const res2 = await fetch('/api/ai/chat', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                messages: [{ role: 'user', content: prompt }] 
+              })
+            });
+            
+            const json2 = await res2.json();
+            if (!json2.ok || !json2.content) {
+              console.warn(`[DecisionHistory] ${coin} AI决策失败`);
+              continue;
+            }
+            
+            const aiReply = json2.content;
+            
+            // 4. 解析并立即处理决策
+            const decision = parseDecisionFromText(aiReply, true); // 静默模式
+            if (decision) {
+              console.log(`[DecisionHistory] ${coin}: ${decision.action} (${decision.confidence}%)`);
+              
+              // 🔧 立即处理决策（不等其他币种）
+              const decisionId = (isManual ? 'test-' : 'auto-') + Date.now() + '-' + coin + '-' + Math.random().toString(16).slice(2);
+              const prefix = isManual ? '[测试]' : '[自动]';
+              
+              if (decision.action !== 'HOLD') {
+                // 交易决策 - 立即执行
+                const title = `${prefix} - ${decision.action} ${decision.symbol} (置信度: ${decision.confidence}%)`;
+                const desc = `${decision.reasoning}\n\n决策详情：\n- 操作: ${decision.action}\n- 币种: ${decision.symbol}\n- 杠杆: ${decision.leverage || 5}x\n- 仓位大小: $${decision.sizeUSDT} USDT`;
+                
+                if (autoExecute) {
+                  console.log(`[DecisionHistory] → 立即执行: ${decision.symbol} ${decision.action}`);
+                  
+                  try {
+                  const execRes = await fetch('/api/ai/execute-decision', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                      decision,
+                      decisionId  // 🔧 传递决策ID用于反思记录
+                    })
+                  });
+                    
+                    const execResult = await execRes.json();
+                    
+                    if (execResult.success) {
+                      await publishDecision({
+                        id: decisionId,
+                        title,
+                        desc: desc + `\n\n已执行 - ID: ${execResult.order?.orderId}`,
+                        ts: Date.now(),
+                        status: 'approved',
+                        prompt,
+                        reply: aiReply
+                      });
+                      console.log(`[执行成功] ${coin} ${decision.action} - ID: ${execResult.order?.orderId}`);
+                    } else {
+                      await publishDecision({
+                        id: decisionId,
+                        title: title + ' (失败)',
+                        desc: desc + `\n\n执行失败: ${execResult.error}`,
+                        ts: Date.now(),
+                        status: 'rejected',
+                        prompt,
+                        reply: aiReply
+                      });
+                      console.error(`[执行失败] ${coin} - ${execResult.error}`);
+                    }
+                  } catch (error) {
+                    console.error(`[执行异常] ${coin}:`, error);
+                  }
+                } else {
+                  // 手动模式 - 发布待处理
+                  await publishDecision({
+                    id: decisionId,
+                    title,
+                    desc,
+                    ts: Date.now(),
+                    status: 'pending',
+                    prompt,
+                    reply: aiReply
+                  });
+                }
+              } else {
+                // HOLD决策 - 记录
+                await publishDecision({
+                  id: decisionId,
+                  title: `${prefix} - HOLD - ${coin}`,
+                  desc: decision.reasoning,
+                  ts: Date.now(),
+                  status: 'approved',
+                  prompt,
+                  reply: aiReply
+                });
+              }
+              
+              // 延迟避免ID冲突
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            
+            // 延迟避免API限流（分析下一个币种前）
+            if (i < enabledCoins.length - 1) {
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+          } catch (error) {
+            console.error(`[DecisionHistory] ${coin} 处理失败:`, error);
+          }
+        }
+        
+        console.log(`[DecisionHistory] 所有币种处理完成`);
+        
+        // 单币种模式：直接结束，不需要后续的统一处理
+        setInvocationCount(newCount);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('ai_decision_invocation_count', String(newCount));
+        }
+        if (isManual) {
+          message.success(`单币种模式完成: 已分析${enabledCoins.length}个币种`);
+        }
+        return; // 提前返回
+        
+      } else {
+        // 原有的全量模式
+        if (isManual) message.info('正在获取市场数据...');
+        
+        // 1. 获取市场数据提示词
+        const res1 = await fetch('/api/ai/prompt', { cache: 'no-store' });
+        const json1 = await res1.json();
+        if (!json1.success || !json1.prompt) {
+          throw new Error('获取市场数据失败');
+        }
+        
+        if (isManual) message.info('正在请求AI决策...');
+        
+        // 2. 组装完整提示词
+        const marketData = json1.prompt;
+        const prompt = composePrompt(marketData, newCount, tradingMinutes);
+        
+        // 3. 调用AI服务
+        const res2 = await fetch('/api/ai/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            messages: [{ role: 'user', content: prompt }] 
+          })
+        });
+        
+        const json2 = await res2.json();
+        if (!json2.ok || !json2.content) {
+          throw new Error(json2.error || 'AI决策失败');
+        }
+        
+        const aiReply = json2.content;
+        if (isManual) message.success('AI回复已生成，正在解析决策...');
+        
+        // 4. 解析决策（支持多个）
+        parsedDecisions = parseDecisionsFromText(aiReply);
+        if (isManual) message.success('AI回复已生成，正在解析决策...');
       }
       
-      const aiReply = json2.content;
-      if (isManual) message.success('AI回复已生成，正在解析决策...');
-      
-      // 4. 解析决策（支持多个）
-      const parsedDecisions = parseDecisionsFromText(aiReply);
-      console.log(`[DecisionHistory] ✅ 解析: ${parsedDecisions.length}个决策 - ${parsedDecisions.map(d => `${d.symbol}-${d.action}`).join(', ')}`);
+      console.log(`[DecisionHistory] 解析: ${parsedDecisions.length}个决策 - ${parsedDecisions.map(d => `${d.symbol}-${d.action}`).join(', ')}`);
       
       if (!parsedDecisions || parsedDecisions.length === 0) {
         console.error('[DecisionHistory] 解析失败，这不应该发生');
@@ -195,7 +439,7 @@ export default function DecisionHistory() {
         return;
       }
       
-      const prefix = isManual ? '🧪 测试' : '🤖 自动';
+      const prefix = isManual ? '[测试]' : '[自动]';
       let tradingCount = 0; // 交易决策计数
       let holdCount = 0;    // HOLD决策计数
       
@@ -229,20 +473,23 @@ ${parsedDecision.reasoning}
         // 如果开启了自动执行，立即执行交易（无论手动还是自动触发）
         if (autoExecute) {
           console.log(`[DecisionHistory] → 自动执行: ${parsedDecision.symbol} ${parsedDecision.action}`);
-          if (isManual) message.info('🤖 自动执行模式已开启，正在执行交易...');
+          if (isManual) message.info('自动执行模式已开启，正在执行交易...');
           
           try {
             const res = await fetch('/api/ai/execute-decision', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ decision: parsedDecision })
+              body: JSON.stringify({ 
+                decision: parsedDecision,
+                decisionId  // 🔧 传递决策ID用于反思记录
+              })
             });
 
             const result = await res.json();
 
             if (result.success) {
               // 执行成功，发布为已通过状态
-              const executionInfo = `\n\n✅ 已自动执行
+              const executionInfo = `\n\n已自动执行
 - 订单ID: ${result.order?.orderId}
 - 实际数量: ${result.order?.quantity}张
 - 杠杆: ${parsedDecision.leverage || 5}x
@@ -257,8 +504,8 @@ ${parsedDecision.reasoning}
                 prompt, 
                 reply: aiReply 
               });
-              console.log(`✅ [自动执行] ${parsedDecision.symbol} ${parsedDecision.action} - ID: ${result.order?.orderId}`);
-              if (isManual) message.success(`✅ 交易已自动执行！订单ID: ${result.order?.orderId}`);
+              console.log(`[自动执行成功] ${parsedDecision.symbol} ${parsedDecision.action} - ID: ${result.order?.orderId}`);
+              if (isManual) message.success(`交易已自动执行！订单ID: ${result.order?.orderId}`);
             } else {
               // 执行失败，发布为待处理（让用户查看失败原因）
               await publishDecision({ 
@@ -270,7 +517,7 @@ ${parsedDecision.reasoning}
                 prompt, 
                 reply: aiReply 
               });
-              console.error(`❌ [自动执行] ${title} - 失败:`, result.error);
+              console.error(`[自动执行失败] ${title}:`, result.error);
             }
           } catch (error) {
             // 执行异常，发布为待处理
@@ -278,13 +525,13 @@ ${parsedDecision.reasoning}
             await publishDecision({ 
               id: decisionId, 
               title: title + ' (执行异常)', 
-              desc: desc + `\n\n❌ 执行异常：${err.message}`, 
+              desc: desc + `\n\n执行异常: ${err.message}`, 
               ts: Date.now(), 
               status: 'rejected',
               prompt, 
               reply: aiReply 
             });
-            console.error(`❌ [自动执行] ${title} - 异常:`, error);
+            console.error(`[自动执行异常] ${title}:`, error);
           }
         } else {
           // 手动模式或手动测试：发布为待处理
@@ -298,7 +545,7 @@ ${parsedDecision.reasoning}
             reply: aiReply 
           });
           
-          if (isManual) message.success('✅ 决策已生成！');
+          if (isManual) message.success('决策已生成');
           // console.log('[DecisionHistory] 已发布交易决策:', title); // ✅ 屏蔽
         }
       } else {
@@ -325,7 +572,7 @@ ${parsedDecision.reasoning}
       }
     } // for循环结束
       
-      console.log(`[DecisionHistory] ✅ 处理完成: ${tradingCount}个交易, ${holdCount}个HOLD`);
+      console.log(`[DecisionHistory] 处理完成: ${tradingCount}个交易, ${holdCount}个HOLD`);
       
       // 所有决策处理完后，更新调用计数
       setInvocationCount(newCount);
@@ -335,7 +582,7 @@ ${parsedDecision.reasoning}
       
       if (isManual) {
         if (tradingCount > 0) {
-          message.success(`✅ 已生成 ${tradingCount} 个交易决策，${holdCount} 个HOLD`);
+          message.success(`已生成 ${tradingCount} 个交易决策，${holdCount} 个HOLD`);
         } else {
           message.info(`所有币种均建议HOLD（${holdCount}个）`);
         }
@@ -414,7 +661,10 @@ ${parsedDecision.reasoning}
           const res = await fetch('/api/ai/execute-decision', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ decision: parsedDecision })
+            body: JSON.stringify({ 
+              decision: parsedDecision,
+              decisionId: decision.id  // 🔧 传递决策ID用于反思记录
+            })
           });
 
           const result = await res.json();
@@ -422,7 +672,7 @@ ${parsedDecision.reasoning}
 
           if (result.success) {
             await updateDecisionStatus(decision.id, 'approved');
-            message.success(`✅ 订单已执行！订单ID: ${result.order?.orderId}`);
+            message.success(`订单已执行！订单ID: ${result.order?.orderId}`);
             console.log('[执行结果]', result);
           } else {
             message.error(`执行失败: ${result.error}`);
@@ -537,7 +787,10 @@ ${parsedDecision.reasoning}
         const res = await fetch('/api/ai/execute-decision', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ decision: parsedDecision })
+          body: JSON.stringify({ 
+            decision: parsedDecision,
+            decisionId: decision.id  // 🔧 传递决策ID用于反思记录
+          })
         });
 
         const result = await res.json();
@@ -545,12 +798,12 @@ ${parsedDecision.reasoning}
         if (result.success) {
           await updateDecisionStatus(decision.id, 'approved');
           successCount++;
-          console.log(`✅ [批量执行] ${decision.title}`);
+          console.log(`[批量执行成功] ${decision.title}`);
         } else {
           // 执行失败，标记为拒绝
           await updateDecisionStatus(decision.id, 'rejected');
           failCount++;
-          console.error(`❌ [批量执行] ${decision.title} - ${result.error}`);
+          console.error(`[批量执行失败] ${decision.title} - ${result.error}`);
         }
 
         // 延迟1秒避免API限流
@@ -583,158 +836,205 @@ ${parsedDecision.reasoning}
   };
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 8, padding: 8 }}>
-      {/* 控制面板 */}
-      <div style={{
-        background: '#0f1116',
-        border: '1px solid #1a1d26',
-        borderRadius: 6,
-        padding: 12,
-        flexShrink: 0
-      }}>
-        <Space direction="vertical" style={{ width: '100%' }} size={8}>
-          {/* 状态统计 */}
-          <Space style={{ width: '100%', justifyContent: 'space-between', flexWrap: 'wrap' }}>
-            <Text style={{ color: '#00e676', fontSize: 12, fontWeight: 'bold' }}>
-              决策历史 ({decisions.length})
-            </Text>
-            <Space size={4}>
-              <Tag color="default" style={{ fontSize: 11 }}>
-                待处理: {decisions.filter(d => d.status === 'pending').length}
-              </Tag>
-              <Tag color="green" style={{ fontSize: 11 }}>
-                已通过: {decisions.filter(d => d.status === 'approved').length}
-              </Tag>
-              <Tag color="red" style={{ fontSize: 11 }}>
-                已拒绝: {decisions.filter(d => d.status === 'rejected').length}
-              </Tag>
-            </Space>
-          </Space>
-          
-          {/* 自动请求开关和时间间隔 */}
-          <Space direction="vertical" style={{ width: '100%' }} size={4}>
-            <Space style={{ width: '100%', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Space size={8}>
-                <Switch 
-                  checked={autoRequest} 
-                  onChange={toggleAutoRequest}
-                  size="small"
-                />
-                <Text style={{ color: '#a1a9b7', fontSize: 12 }}>
-                  自动请求
-                </Text>
-              </Space>
-              <Text style={{ color: '#6b7280', fontSize: 11 }}>
-                已调用 {invocationCount} 次
-              </Text>
-            </Space>
-            
-            {/* 时间间隔设置 */}
-            {autoRequest && (
-              <Space direction="vertical" style={{ width: '100%' }} size={4}>
-                <Space style={{ width: '100%', alignItems: 'center' }} size={8}>
-                  <Text style={{ color: '#6b7280', fontSize: 11 }}>间隔:</Text>
-                  <InputNumber
-                    value={intervalSeconds}
-                    onChange={handleIntervalChange}
-                    min={10}
-                    max={86400}
-                    step={10}
-                    size="small"
-                    style={{ width: 80 }}
-                  />
-                  <Text style={{ color: '#6b7280', fontSize: 11 }}>秒</Text>
-                  <Text style={{ color: '#6b7280', fontSize: 11 }}>
-                    ({
-                      intervalSeconds >= 3600 
-                        ? `${Math.floor(intervalSeconds / 3600)}小时${Math.floor((intervalSeconds % 3600) / 60) > 0 ? Math.floor((intervalSeconds % 3600) / 60) + '分' : ''}`
-                        : intervalSeconds >= 60
-                          ? `${Math.floor(intervalSeconds / 60)}分${intervalSeconds % 60 > 0 ? intervalSeconds % 60 + '秒' : ''}`
-                          : `${intervalSeconds}秒`
-                    })
-                  </Text>
-                </Space>
-                {/* 快捷设置按钮 */}
-                <Space size={4} wrap>
-                  <Button size="small" type="text" onClick={() => handleIntervalChange(60)}>1分钟</Button>
-                  <Button size="small" type="text" onClick={() => handleIntervalChange(300)}>5分钟</Button>
-                  <Button size="small" type="text" onClick={() => handleIntervalChange(900)}>15分钟</Button>
-                  <Button size="small" type="text" onClick={() => handleIntervalChange(3600)}>1小时</Button>
-                  <Button size="small" type="text" onClick={() => handleIntervalChange(14400)}>4小时</Button>
-                  <Button size="small" type="text" onClick={() => handleIntervalChange(86400)}>1天</Button>
-                </Space>
-              </Space>
-            )}
-          </Space>
-          
-          {/* 自动执行开关 */}
-          <Space direction="vertical" style={{ width: '100%' }} size={4}>
-            <Space style={{ width: '100%', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Space size={8}>
-                <Switch 
-                  checked={autoExecute} 
-                  onChange={toggleAutoExecute}
-                  size="small"
-                />
-                <Text style={{ color: autoExecute ? '#ff4d4f' : '#a1a9b7', fontSize: 12, fontWeight: autoExecute ? 'bold' : 'normal' }}>
-                  {autoExecute ? '⚠️ 自动执行：已开启' : '自动执行：已关闭'}
-                </Text>
-              </Space>
-              {autoExecute && (
-                <Text style={{ color: '#ff4d4f', fontSize: 11 }}>
-                  ⚠️ 谨慎
-                </Text>
-              )}
-            </Space>
-            
-            {!autoExecute && (
-              <Alert
-                message="提示：自动执行已关闭，新决策将显示为待处理，需手动点击执行"
-                type="info"
-                showIcon
-                style={{ fontSize: 11, padding: '4px 8px' }}
-                banner
-              />
-            )}
-          </Space>
-          
-          {/* 操作按钮 */}
-          <Space style={{ width: '100%' }} size={4}>
-            <Button 
-              type="primary" 
-              size="small" 
-              onClick={() => generateAIDecision(true)}
-              loading={testing}
-              style={{ flex: 1 }}
-            >
-              {testing ? '生成中...' : '🧪 立即生成'}
-            </Button>
-            
-            {/* 批量执行待处理决策 */}
-            {decisions.filter(d => d.status === 'pending').length > 0 && (
-              <Button 
-                size="small" 
-                danger
-                onClick={executeAllPending}
-                style={{ flex: 1 }}
-              >
-                执行全部待处理({decisions.filter(d => d.status === 'pending').length})
-              </Button>
-            )}
-          </Space>
-        </Space>
-      </div>
-
-      {/* 决策列表 */}
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      {/* 统一滚动区域：控制面板 + 决策列表 */}
       <div style={{
         flex: 1,
         minHeight: 0,
         overflowY: 'auto',
-        border: '1px solid #1a1d26',
-        borderRadius: 6,
-        padding: 8,
-        background: '#0f1116'
+        padding: 8
       }}>
+        {/* 控制面板 */}
+        <div style={{
+          background: '#0f1116',
+          border: '1px solid #1a1d26',
+          borderRadius: 6,
+          padding: 12,
+          marginBottom: 8
+        }}>
+          <Space direction="vertical" style={{ width: '100%' }} size={8}>
+            {/* 状态统计 */}
+            <Space style={{ width: '100%', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+              <Text style={{ color: '#00e676', fontSize: 12, fontWeight: 'bold' }}>
+                决策历史 ({decisions.length})
+              </Text>
+              <Space size={4}>
+                <Tag color="default" style={{ fontSize: 11 }}>
+                  待处理: {decisions.filter(d => d.status === 'pending').length}
+                </Tag>
+                <Tag color="green" style={{ fontSize: 11 }}>
+                  已通过: {decisions.filter(d => d.status === 'approved').length}
+                </Tag>
+                <Tag color="red" style={{ fontSize: 11 }}>
+                  已拒绝: {decisions.filter(d => d.status === 'rejected').length}
+                </Tag>
+              </Space>
+            </Space>
+            
+            {/* 自动请求开关和时间间隔 */}
+            <Space direction="vertical" style={{ width: '100%' }} size={4}>
+              <Space style={{ width: '100%', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Space size={8}>
+                  <Switch 
+                    checked={autoRequest} 
+                    onChange={toggleAutoRequest}
+                    size="small"
+                  />
+                  <Text style={{ color: '#a1a9b7', fontSize: 12 }}>
+                    自动请求
+                  </Text>
+                </Space>
+                <Text style={{ color: '#6b7280', fontSize: 11 }}>
+                  已调用 {invocationCount} 次
+                </Text>
+              </Space>
+              
+              {/* 时间间隔设置 */}
+              {autoRequest && (
+                <Space direction="vertical" style={{ width: '100%' }} size={4}>
+                  <Space style={{ width: '100%', alignItems: 'center' }} size={8}>
+                    <Text style={{ color: '#6b7280', fontSize: 11 }}>间隔:</Text>
+                    <InputNumber
+                      value={intervalSeconds}
+                      onChange={handleIntervalChange}
+                      min={10}
+                      max={86400}
+                      step={10}
+                      size="small"
+                      style={{ width: 80 }}
+                    />
+                    <Text style={{ color: '#6b7280', fontSize: 11 }}>秒</Text>
+                    <Text style={{ color: '#6b7280', fontSize: 11 }}>
+                      ({
+                        intervalSeconds >= 3600 
+                          ? `${Math.floor(intervalSeconds / 3600)}小时${Math.floor((intervalSeconds % 3600) / 60) > 0 ? Math.floor((intervalSeconds % 3600) / 60) + '分' : ''}`
+                          : intervalSeconds >= 60
+                            ? `${Math.floor(intervalSeconds / 60)}分${intervalSeconds % 60 > 0 ? intervalSeconds % 60 + '秒' : ''}`
+                            : `${intervalSeconds}秒`
+                      })
+                    </Text>
+                  </Space>
+                  {/* 快捷设置按钮 */}
+                  <Space size={4} wrap>
+                    <Button size="small" type="text" onClick={() => handleIntervalChange(60)}>1分钟</Button>
+                    <Button size="small" type="text" onClick={() => handleIntervalChange(300)}>5分钟</Button>
+                    <Button size="small" type="text" onClick={() => handleIntervalChange(900)}>15分钟</Button>
+                    <Button size="small" type="text" onClick={() => handleIntervalChange(3600)}>1小时</Button>
+                    <Button size="small" type="text" onClick={() => handleIntervalChange(14400)}>4小时</Button>
+                    <Button size="small" type="text" onClick={() => handleIntervalChange(86400)}>1天</Button>
+                  </Space>
+                </Space>
+              )}
+            </Space>
+            
+            {/* 自动执行开关 */}
+            <Space direction="vertical" style={{ width: '100%' }} size={4}>
+              <Space style={{ width: '100%', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Space size={8}>
+                  <Switch 
+                    checked={autoExecute} 
+                    onChange={toggleAutoExecute}
+                    size="small"
+                  />
+                  <Text style={{ color: autoExecute ? '#ff4d4f' : '#a1a9b7', fontSize: 12, fontWeight: autoExecute ? 'bold' : 'normal' }}>
+                    {autoExecute ? '自动执行：已开启（警告）' : '自动执行：已关闭'}
+                  </Text>
+                </Space>
+                {autoExecute && (
+                  <Text style={{ color: '#ff4d4f', fontSize: 11 }}>
+                    谨慎
+                  </Text>
+                )}
+              </Space>
+              
+              {!autoExecute && (
+                <Alert
+                  message="提示：自动执行已关闭，新决策将显示为待处理，需手动点击执行"
+                  type="info"
+                  showIcon
+                  style={{ fontSize: 11, padding: '4px 8px' }}
+                  banner
+                />
+              )}
+            </Space>
+            
+            {/* 币种交易开关 */}
+            <Space direction="vertical" style={{ width: '100%' }} size={4}>
+              <Text style={{ color: '#a1a9b7', fontSize: 12, fontWeight: 'bold' }}>
+                交易币种选择
+              </Text>
+              <div style={{ 
+                display: 'grid', 
+                gridTemplateColumns: 'repeat(3, 1fr)', 
+                gap: 8 
+              }}>
+                {Object.keys(coinToggles).map(coin => (
+                  <div 
+                    key={coin}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '4px 8px',
+                      background: coinToggles[coin] ? '#0a2818' : '#1a1d26',
+                      borderRadius: 4,
+                      border: `1px solid ${coinToggles[coin] ? '#00e676' : '#2a2d36'}`
+                    }}
+                  >
+                    <Switch
+                      checked={coinToggles[coin]}
+                      onChange={(checked) => toggleCoin(coin, checked)}
+                      size="small"
+                    />
+                    <Text style={{ 
+                      color: coinToggles[coin] ? '#00e676' : '#6b7280', 
+                      fontSize: 11,
+                      fontWeight: coinToggles[coin] ? 'bold' : 'normal'
+                    }}>
+                      {coin}
+                    </Text>
+                  </div>
+                ))}
+              </div>
+              <Text style={{ color: '#6b7280', fontSize: 10 }}>
+                启用的币种: {Object.values(coinToggles).filter(v => v).length}/6
+              </Text>
+            </Space>
+            
+            {/* 操作按钮 */}
+            <Space style={{ width: '100%' }} size={4}>
+              <Button 
+                type="primary" 
+                size="small" 
+                onClick={() => generateAIDecision(true)}
+                loading={testing}
+                style={{ flex: 1 }}
+              >
+                {testing ? '生成中...' : '立即生成'}
+              </Button>
+              
+              {/* 批量执行待处理决策 */}
+              {decisions.filter(d => d.status === 'pending').length > 0 && (
+                <Button 
+                  size="small" 
+                  danger
+                  onClick={executeAllPending}
+                  style={{ flex: 1 }}
+                >
+                  执行全部待处理({decisions.filter(d => d.status === 'pending').length})
+                </Button>
+              )}
+            </Space>
+          </Space>
+        </div>
+
+        {/* 决策列表 - 紧接在控制面板下方 */}
+        <div style={{
+          border: '1px solid #1a1d26',
+          borderRadius: 6,
+          padding: 8,
+          background: '#0f1116'
+        }}>
         {decisions.length === 0 ? (
           <Empty
             description={
@@ -788,7 +1088,7 @@ ${parsedDecision.reasoning}
                               handleApproveAndExecute(decision);
                             }}
                           >
-                            ⚡ 立即执行
+                            立即执行
                           </Button>
                           <Button
                             size="small"
@@ -842,6 +1142,7 @@ ${parsedDecision.reasoning}
             )}
           />
         )}
+        </div>
       </div>
 
       {/* 决策详情弹窗 */}

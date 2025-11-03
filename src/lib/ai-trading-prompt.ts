@@ -27,14 +27,14 @@ FORMAT 1 - Single Decision:
   "confidence": 0-100,
   "entry_price": number (optional, omit for market orders),
   "size_usdt": number (REQUIRED for OPEN actions - USDT amount to use, see guidelines below),
-  "take_profit": number (recommended),
-  "stop_loss": number (recommended),
+  "take_profit": number (MANDATORY for OPEN actions - must provide),
+  "stop_loss": number (MANDATORY for OPEN actions - must provide),
   "leverage": 1-10,
   "reasoning": "Your detailed analysis",
   "timeframe": "SHORT|MEDIUM|LONG"
 }
 
-FORMAT 2 - Multiple Decisions (you can analyze multiple coins at once):
+FORMAT 2 - Multiple Decisions (ONLY when you have multiple CLEAR opportunities):
 {
   "decisions": [
     {
@@ -45,33 +45,51 @@ FORMAT 2 - Multiple Decisions (you can analyze multiple coins at once):
       "take_profit": 112000,
       "stop_loss": 108500,
       "leverage": 5,
-      "reasoning": "BTC analysis...",
+      "reasoning": "BTC shows STRONG bullish alignment...",
       "timeframe": "SHORT"
     },
     {
-      "symbol": "ETH",
-      "action": "HOLD",
-      "confidence": 50,
-      "reasoning": "ETH mixed signals...",
+      "symbol": "XRP",
+      "action": "OPEN_SHORT",
+      "confidence": 78,
+      "size_usdt": 300,
+      "take_profit": 2.35,
+      "stop_loss": 2.55,
+      "leverage": 5,
+      "reasoning": "XRP shows CLEAR bearish breakdown...",
       "timeframe": "SHORT"
     }
   ]
 }
 
+⚠️ IMPORTANT: Only include coins with HIGH-CONFIDENCE setups (>70%)
+- Don't include HOLD decisions for every coin (waste of analysis)
+- Focus on 1-3 best opportunities
+- Skip coins with unclear signals entirely
+
 POSITION SIZING GUIDELINES (size_usdt):
-- Check "Available Cash" above and don't exceed it
-- Recommended amounts based on coin and leverage:
+⚠️ CRITICAL: Check "Available Cash" above - NEVER exceed it!
+⚠️ If Available Cash < $100, DO NOT open new positions (wait for existing to close)
+
+Recommended amounts (ONLY if you have sufficient cash):
   * BTC (5-10x leverage): 300-1000 USDT
   * ETH (5-10x leverage): 200-800 USDT  
   * SOL/BNB (3-8x leverage): 150-600 USDT
   * XRP/DOGE (3-8x leverage): 100-400 USDT
+
+STRICT RULES:
+- size_usdt MUST be <= Available Cash
+- If Available Cash is $50, maximum size_usdt is $45 (leave 10% buffer)
 - Total across all open positions should not exceed 80% of available cash
 - For CLOSE actions, size_usdt is not needed (closes entire position)
+- If cash is low, prefer HOLD over opening small positions
 
-Note: 
-- You can return 1-6 decisions (one for each coin: BTC, ETH, SOL, BNB, XRP, DOGE)
+DECISION FORMAT:
+- If analyzing a SINGLE coin: Return FORMAT 1 (single decision object)
+- If analyzing MULTIPLE coins: Return FORMAT 2 (decisions array)
 - size_usdt is REQUIRED for all OPEN actions
-- If most coins should HOLD, you can return just one decision object with action: HOLD
+- ONLY make decisions with HIGH confidence (>=70%)
+- If signals are unclear or mixed, choose HOLD
 
 TRADING RULES TO PREVENT OVER-TRADING:
 
@@ -112,6 +130,8 @@ TRADING RULES TO PREVENT OVER-TRADING:
      * Have sufficient available cash
 
 2. CLOSING POSITIONS - STRICT THRESHOLDS (DO NOT close positions prematurely):
+   - ⚠️ CRITICAL: ONLY close positions that exist in "CURRENT LIVE POSITIONS" section
+   - If position is NOT in live positions, it's already closed (by TP/SL) - DO NOT try to close it again
    - Check the "QUICK SUMMARY" section which shows profit AFTER FEES
    - Trading fees on OKX: ~0.05% per trade (0.1% total for open+close)
    - ONLY close a position if ONE of these conditions is met:
@@ -155,10 +175,35 @@ CRITICAL:
 - Your response must be ONLY valid JSON, starting with { and ending with }
 - size_usdt is MANDATORY for all OPEN_LONG and OPEN_SHORT actions
 - Example: "size_usdt": 500 means use $500 USDT for this trade
-- Check "Available Cash" in the data above - don't exceed it
-- Recommended: use 20-40% of available cash per position
-- Make sure size_usdt × leverage is enough for at least 1 contract
-- If available cash is too low for a meaningful trade, choose HOLD instead
+
+⚠️ AVAILABLE CASH RULES (EXTREMELY IMPORTANT):
+- ALWAYS check "Available Cash" in the data above
+- size_usdt MUST be <= Available Cash (leave 10% buffer)
+- Example: If Available Cash = $100, maximum size_usdt = $90
+- Example: If Available Cash = $50, maximum size_usdt = $45
+- Example: If Available Cash = $10, DO NOT open any positions (choose HOLD)
+- If cash is insufficient for your desired size_usdt, reduce it or choose HOLD
+- Recommended: use 20-50% of available cash per position
+- If available cash < $50, strongly prefer HOLD over opening tiny positions
+
+⚠️ TAKE PROFIT & STOP LOSS RULES (MANDATORY):
+- For ALL OPEN_LONG and OPEN_SHORT actions, you MUST provide BOTH take_profit AND stop_loss
+- Calculate realistic TP/SL based on:
+  * Support/resistance levels
+  * ATR (volatility)
+  * Risk-reward ratio (minimum 1:2)
+  * Recent price action
+- LONG positions:
+  * take_profit: Set 3-5% above entry (conservative) or at next resistance
+  * stop_loss: Set 2-3% below entry or below recent support
+- SHORT positions:
+  * take_profit: Set 3-5% below entry (conservative) or at next support
+  * stop_loss: Set 2-3% above entry or above recent resistance
+- Example for BTC LONG at $107,000:
+  * take_profit: $110,350 (3.1% profit)
+  * stop_loss: $104,930 (1.9% loss)
+  * Risk-reward: 1:1.6 ✅
+- Do NOT open positions without clear TP/SL levels
 - Do not include any other text, markdown formatting, or explanations outside the JSON`;
 }
 
@@ -201,18 +246,18 @@ export function parseDecisionsFromText(text: string, silent = false): ParsedDeci
     
     const parsed = JSON.parse(jsonText);
     
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const parseOne = (obj: any): ParsedDecision => ({
-      symbol: obj.symbol || 'GENERAL',
+    // 解析单个决策对象
+    const parseOne = (obj: Record<string, unknown>): ParsedDecision => ({
+      symbol: String(obj.symbol || 'GENERAL'),
       action: String(obj.action || 'HOLD').toUpperCase() as ParsedDecision['action'],
-      confidence: parseInt(obj.confidence || '50'),
-      entryPrice: obj.entry_price ? parseFloat(obj.entry_price) : undefined,
-      sizePercent: obj.size_percent ? parseFloat(obj.size_percent) : undefined,
-      sizeUSDT: obj.size_usdt ? parseFloat(obj.size_usdt) : undefined,
-      takeProfit: obj.take_profit ? parseFloat(obj.take_profit) : undefined,
-      stopLoss: obj.stop_loss ? parseFloat(obj.stop_loss) : undefined,
-      leverage: obj.leverage ? parseFloat(obj.leverage) : undefined,
-      reasoning: obj.reasoning || '未提供理由',
+      confidence: typeof obj.confidence === 'number' ? obj.confidence : parseInt(String(obj.confidence || '50')),
+      entryPrice: obj.entry_price ? parseFloat(String(obj.entry_price)) : undefined,
+      sizePercent: obj.size_percent ? parseFloat(String(obj.size_percent)) : undefined,
+      sizeUSDT: obj.size_usdt ? parseFloat(String(obj.size_usdt)) : undefined,
+      takeProfit: obj.take_profit ? parseFloat(String(obj.take_profit)) : undefined,
+      stopLoss: obj.stop_loss ? parseFloat(String(obj.stop_loss)) : undefined,
+      leverage: obj.leverage ? parseFloat(String(obj.leverage)) : undefined,
+      reasoning: String(obj.reasoning || '未提供理由'),
       timeframe: obj.timeframe ? String(obj.timeframe).toUpperCase() as ParsedDecision['timeframe'] : 'SHORT'
     });
     

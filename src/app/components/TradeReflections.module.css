@@ -1,0 +1,267 @@
+.container {
+  padding: 0;
+  max-width: 1400px;
+  margin: 0 auto;
+  background: #0f1116;
+  width: 100%;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.header h2 {
+  margin: 0;
+  font-size: 24px;
+  color: #00e676;
+}
+
+.filters {
+  display: flex;
+  gap: 12px;
+}
+
+.select {
+  padding: 8px 12px;
+  border: 1px solid #1a1d26;
+  border-radius: 6px;
+  background: #1e293b;
+  color: #e2e8f0;
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+.select:hover {
+  border-color: #00e676;
+}
+
+.select:focus {
+  outline: none;
+  border-color: #00e676;
+  box-shadow: 0 0 0 3px rgba(0, 230, 118, 0.2);
+}
+
+.statsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.statCard {
+  background: #1e293b;
+  border: 1px solid #1a1d26;
+  border-radius: 8px;
+  padding: 20px;
+  text-align: center;
+}
+
+.statLabel {
+  font-size: 14px;
+  color: #94a3b8;
+  margin-bottom: 8px;
+}
+
+.statValue {
+  font-size: 32px;
+  font-weight: 700;
+  color: #f1f5f9;
+  margin-bottom: 4px;
+}
+
+.statSubtext {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.section {
+  background: #1e293b;
+  border: 1px solid #1a1d26;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.section h3 {
+  margin: 0 0 16px 0;
+  font-size: 18px;
+  color: #00e676;
+}
+
+.recommendationsList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.recommendationItem {
+  padding: 12px 16px;
+  background: #0f1116;
+  border-left: 4px solid #00e676;
+  border-radius: 4px;
+  font-size: 14px;
+  color: #cbd5e1;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.listItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+  background: #0f1116;
+  border-radius: 6px;
+  font-size: 14px;
+  color: #cbd5e1;
+}
+
+.errorIcon,
+.successIcon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.reflectionsList {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.reflectionCard {
+  border: 1px solid #1a1d26;
+  border-radius: 8px;
+  padding: 16px;
+  background: #0f1116;
+  transition: box-shadow 0.2s, border-color 0.2s;
+}
+
+.reflectionCard:hover {
+  border-color: #00e676;
+  box-shadow: 0 4px 12px rgba(0, 230, 118, 0.1);
+}
+
+.reflectionHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.reflectionTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+}
+
+.outcomeLabel {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.action {
+  padding: 2px 8px;
+  background: #1a1d26;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #cbd5e1;
+  font-weight: 500;
+}
+
+.reflectionDate {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.pnlInfo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  font-size: 16px;
+}
+
+.holdingTime {
+  margin-left: auto;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.reasoning,
+.mistakes,
+.insights,
+.improvement {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  background: #1e293b;
+}
+
+.reasoning {
+  border-left: 3px solid #3b82f6;
+}
+
+.mistakes {
+  border-left: 3px solid #ef4444;
+}
+
+.insights {
+  border-left: 3px solid #00e676;
+}
+
+.improvement {
+  border-left: 3px solid #f59e0b;
+}
+
+.reasoning strong,
+.mistakes strong,
+.insights strong,
+.improvement strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #f1f5f9;
+}
+
+.reasoning p,
+.mistakes p,
+.insights p,
+.improvement p {
+  margin: 0;
+  color: #cbd5e1;
+  line-height: 1.6;
+}
+
+.confidence {
+  margin-top: 12px;
+  padding: 6px 12px;
+  background: #1a1d26;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #00e676;
+  display: inline-block;
+}
+
+.loading,
+.empty {
+  text-align: center;
+  padding: 40px;
+  color: #94a3b8;
+  font-size: 14px;
+}
+
+.reflectionsList {
+  min-height: 200px;
+}
+
+/* 已经是深色主题，移除媒体查询 */
+

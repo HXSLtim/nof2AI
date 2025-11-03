@@ -10,7 +10,11 @@
       "Bash(Sort-Object:*)",
       "Bash(Select-Object Name, Length, LastWriteTime)",
       "Bash(Format-Table -AutoSize)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(npm run dev:*)",
+      "Bash(curl:*)",
+      "Bash(ConvertFrom-Json)",
+      "Bash(npx tsx:*)"
     ],
     "deny": [],
     "ask": []

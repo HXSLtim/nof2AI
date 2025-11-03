@@ -1,22 +1,41 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { fetchCandles, fetchFundingRate, fetchOpenInterest, fetchAccountTotal, fetchAvailableUSDT, fetchPositions, fetchTickers } from '@/lib/okx';
 import { queryEquity, queryPrices, queryIndicators3m, queryLatestFundingRate, queryLatestOpenInterest, insertPriceSnapshot, insertIndicators3m, insertFundingRate, insertOpenInterest, queryActiveOpenDecisions } from '@/lib/db';
 import { ema, macd, rsi, atr, midPrices } from '@/lib/indicators';
 import { getSentimentIndicators, formatSentimentForPrompt } from '@/lib/sentiment';
 import { parseDecisionFromText } from '@/lib/ai-trading-prompt';
+import { SUPPORTED_COINS } from '@/lib/constants';
 
 /**
  * 生成符合 README 模板的 AI 提示词
- * GET /api/ai/prompt
+ * GET /api/ai/prompt?symbol=BTC (可选，指定单个币种)
  * @remarks 按 3 分钟与 4 小时两条时间框架计算核心指标，并汇总账户信息。
+ * @param symbol 可选参数，指定单个币种（如BTC），不传则分析所有币种
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    const { searchParams } = new URL(req.url);
+    const targetSymbol = searchParams.get('symbol')?.toUpperCase(); // 如 'BTC'
+    
     /**
      * 目标合约（OKX SWAP）
      * @remarks 对应提示词的大写模块：ALL BTC/ETH/SOL/BNB/XRP/DOGE DATA
      */
-    const INST_IDS = ['BTC-USDT-SWAP', 'ETH-USDT-SWAP', 'SOL-USDT-SWAP', 'BNB-USDT-SWAP', 'XRP-USDT-SWAP', 'DOGE-USDT-SWAP'];
+    const ALL_INST_IDS = SUPPORTED_COINS.map(coin => `${coin}-USDT-SWAP`);
+    
+    // 如果指定了单个币种，只分析该币种
+    const INST_IDS = targetSymbol 
+      ? ALL_INST_IDS.filter(id => id.startsWith(targetSymbol + '-'))
+      : ALL_INST_IDS;
+    
+    if (INST_IDS.length === 0) {
+      return NextResponse.json({ 
+        success: false, 
+        error: `币种 ${targetSymbol} 不支持` 
+      }, { status: 400 });
+    }
+    
+    console.log(`[api/ai/prompt] 分析币种: ${targetSymbol || '全部(6个)'} - ${INST_IDS.join(', ')}`);
 
     // 拉取与计算每个币种的指标
     const sections: string[] = [];
@@ -150,10 +169,34 @@ export async function GET() {
     const sentimentBTC = await getSentimentIndicators('BTC');
     const sentimentText = formatSentimentForPrompt(sentimentBTC);
     
-    // 获取活跃的开仓决策（还未平仓的）
+    // 拉取当前实际仓位（来自OKX）
+    const positions = await fetchPositions().catch(() => [] as any[]);
+    
+    // 获取活跃的开仓决策（还未平仓的）- 需要与实际仓位对比
     const activeDecisions = queryActiveOpenDecisions();
-    const activeDecisionsText = activeDecisions.length > 0
-      ? `\n\nYOUR ACTIVE OPEN POSITIONS FROM PREVIOUS DECISIONS (still open, not yet closed):\n${activeDecisions.map((d, idx) => {
+    
+    // 🔧 修复：只保留在实际交易所仓位中存在的决策（过滤掉已被止损的）
+    const actualActiveDecisions = activeDecisions.filter(d => {
+      const parsed = parseDecisionFromText(d.reply || '');
+      if (!parsed) return false;
+      
+      const symbol = parsed.symbol;
+      const isLong = parsed.action.includes('LONG');
+      
+      // 检查是否在实际仓位中存在匹配的仓位
+      return positions.some((p: any) => {
+        const posCoin = String(p.coin || (p.symbol ? String(p.symbol).split('-')[0] : ''));
+        const posSide = String(p.side || '').toLowerCase();
+        const posQty = Math.abs(Number(p.contracts ?? p.quantity ?? 0));
+        
+        return posCoin === symbol && 
+               ((isLong && posSide === 'long') || (!isLong && posSide === 'short')) &&
+               posQty > 0;
+      });
+    });
+    
+    const activeDecisionsText = actualActiveDecisions.length > 0
+      ? `\n\nYOUR ACTIVE OPEN POSITIONS FROM PREVIOUS DECISIONS (verified to still exist on exchange):\n${actualActiveDecisions.map((d, idx) => {
           const parsed = parseDecisionFromText(d.reply || '');
           const timeAgo = Math.floor((Date.now() - d.ts) / 60000); // 分钟前
           return `${idx + 1}. [Opened ${timeAgo} minutes ago] ${parsed ? JSON.stringify({
@@ -166,7 +209,7 @@ export async function GET() {
             leverage: parsed.leverage,
             reasoning: parsed.reasoning.substring(0, 80)
           }) : d.title}`;
-        }).join('\n')}\n\nIMPORTANT: The positions above are still ACTIVE (not yet closed). Consider whether to:\n- HOLD: Keep these positions if they're performing well\n- CLOSE: Exit if stop loss hit or take profit reached\n- Avoid opening the same position again if it's already active`
+        }).join('\n')}\n\nIMPORTANT: These positions are VERIFIED to still exist on the exchange. Consider whether to:\n- HOLD: Keep these positions if they're performing well\n- CLOSE: Exit if stop loss hit or take profit reached\n- Avoid opening the same position again if it's already active`
       : '';
     
     // 账户信息与绩效
@@ -213,8 +256,7 @@ export async function GET() {
       return `{'symbol': '${sym}', 'side': '${side}', 'quantity': ${f(qty)}, 'entry_price': ${f(entry)}, 'current_price': ${f(mark)}, 'liquidation_price': ${f(liq)}, 'unrealized_pnl': ${f(upl)}, 'leverage': ${f(lev)}, 'exit_plan': ${exitPlan}, 'confidence': ${f(confidence)}, 'risk_usd': ${f(riskUsd)}, 'sl_oid': -1, 'tp_oid': -1, 'wait_for_fill': False, 'entry_oid': -1, 'notional_usd': ${f(notional)}}`;
     };
     
-    // 拉取当前实际仓位（来自OKX）
-    const positions = await fetchPositions().catch(() => [] as any[]);
+    // 格式化仓位行（positions 已在前面获取）
     const positionsLine = positions.length
       ? `\n\nCURRENT LIVE POSITIONS (from OKX exchange, these are your ACTUAL positions right now): ${positions.map(formatPosition).join(' ')}`
       : `\n\nCURRENT LIVE POSITIONS (from OKX exchange): None - You have NO open positions currently`;
@@ -249,7 +291,19 @@ export async function GET() {
       positionSummary,
       `\n\n${sentimentText}`,
       activeDecisionsText,
-      `\n\nIMPORTANT FOR CLOSE ACTIONS: Before issuing any CLOSE action, check "CURRENT LIVE POSITIONS" above. Only close positions that actually exist. If a position from your decision history is not in the live positions list, it may have been auto-closed by TP/SL or the open order failed.`,
+      `\n\n⚠️ CRITICAL RULES FOR CLOSE ACTIONS:
+1. ONLY close positions that exist in "CURRENT LIVE POSITIONS" section above
+2. If "CURRENT LIVE POSITIONS" shows "None", DO NOT issue any CLOSE action
+3. If a position was in your history but NOT in current live positions, it means:
+   - Already closed by Take Profit (TP)
+   - Already closed by Stop Loss (SL)
+   - The open order failed or was cancelled
+4. DO NOT try to close a position that doesn't exist - this will cause an error
+5. Before any CLOSE_LONG or CLOSE_SHORT action, VERIFY the position exists in live positions
+
+Example check:
+- If you see BTC LONG in live positions → OK to issue CLOSE_LONG for BTC
+- If you DON'T see BTC LONG in live positions → DO NOT issue CLOSE_LONG for BTC (already closed)`,
     ].join('\n');
 
     const prompt = [header, '', sections.join('\n\n'), '', footer].join('\n');

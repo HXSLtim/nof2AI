@@ -28,6 +28,8 @@ export default function RootLayout({
         m.startCleanupScheduler();
         // 启动AI决策自动调度器（每5分钟，可配置）
         m.startAIDecisionScheduler();
+        // 启动交易反思自动更新调度器（每5分钟，检测止损/止盈）
+        m.startReflectionScheduler();
       })
       .catch((e) => {
         console.error('[layout] failed to start schedulers', e);

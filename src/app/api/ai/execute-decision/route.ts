@@ -7,6 +7,8 @@ import {
   adjustOrderToAvailableFunds,
   formatMarginCalculation 
 } from '@/lib/margin-calculator';
+import { MAX_ORDER_LIMITS } from '@/lib/constants';
+import { recordTradeOpen, recordTradeClose } from '@/lib/trade-reflection';
 
 /**
  * AI 决策执行 API
@@ -85,7 +87,169 @@ export async function POST(req: NextRequest) {
       console.log('[execute-decision] ✅ 无重复仓位，可以开仓');
     }
     
-    // 检查是否有足够资金
+    // ========== 平仓操作：提前处理，不需要保证金计算 ==========
+    const isClosing = decision.action === 'CLOSE_LONG' || decision.action === 'CLOSE_SHORT';
+    
+    if (isClosing) {
+      console.log('\n[execute-decision] ========================================');
+      console.log('[execute-decision] 🔄 平仓操作开始');
+      console.log('[execute-decision] ========================================');
+      
+      // 🔍 检查账户持仓模式
+      const { fetchAccountConfig } = await import('@/lib/okx');
+      const accountConfig = await fetchAccountConfig();
+      console.log(`[execute-decision] 🔍 账户持仓模式: ${accountConfig.posMode}`);
+      console.log(`[execute-decision] 配置详情:`, JSON.stringify(accountConfig.raw, null, 2));
+      
+      // 构建交易对
+      const symbol = `${decision.symbol}/USDT:USDT`;
+      
+      // 确定方向
+      const side: 'buy' | 'sell' = decision.action === 'CLOSE_LONG' ? 'sell' : 'buy';
+      const posSide: 'long' | 'short' = decision.action === 'CLOSE_LONG' ? 'long' : 'short';
+      
+      console.log(`[execute-decision] 平仓目标:`);
+      console.log(`  - 币种: ${decision.symbol}`);
+      console.log(`  - 仓位方向: ${posSide} (${posSide === 'long' ? '多头' : '空头'})`);
+      console.log(`  - 平仓操作: ${side} (${side === 'buy' ? '买入平空' : '卖出平多'})`);
+      console.log(`  - 交易对: ${symbol}`);
+      
+      // 检查是否有对应仓位
+      console.log(`[execute-decision] 🔍 查找当前仓位...`);
+      console.log(`[execute-decision] 当前所有仓位:`, JSON.stringify(currentPositions.map(p => ({
+        coin: p.coin,
+        side: p.side,
+        contracts: p.contracts
+      })), null, 2));
+      
+      const targetPosition = currentPositions.find(p => 
+        p.coin === decision.symbol && 
+        ((decision.action === 'CLOSE_LONG' && p.side === 'long') ||
+         (decision.action === 'CLOSE_SHORT' && p.side === 'short'))
+      );
+      
+      if (!targetPosition) {
+        console.error(`[execute-decision] ❌ 未找到匹配的仓位`);
+        console.error(`[execute-decision] 查找条件: 币种=${decision.symbol}, 方向=${posSide}`);
+        return NextResponse.json({ 
+          success: false, 
+          error: `无法平仓：账户中没有${decision.symbol}的${decision.action === 'CLOSE_LONG' ? '多头' : '空头'}仓位。可能已被止盈止损自动平仓，或之前开仓失败。` 
+        }, { status: 400 });
+      }
+      
+      // ⚠️ 检查仓位大小是否满足最小精度要求
+      const actualQuantity = Math.abs(Number(targetPosition.contracts || 0));
+      if (actualQuantity < 0.01) {
+        console.warn(`[execute-decision] ⚠️ 仓位过小（${actualQuantity.toFixed(8)}张 < 0.01），无法通过API平仓`);
+        return NextResponse.json({ 
+          success: false, 
+          error: `该${decision.symbol}仓位过小（${actualQuantity.toFixed(8)}张），不满足OKX最小交易精度（0.01张）。请在OKX网页或APP上手动平仓，或等待止盈止损自动平仓。` 
+        }, { status: 400 });
+      }
+      
+      console.log(`[execute-decision] ✅ 找到目标仓位:`);
+      console.log(`  - 币种: ${targetPosition.coin}`);
+      console.log(`  - 方向: ${targetPosition.side}`);
+      console.log(`  - 合约数: ${targetPosition.contracts}张`);
+      console.log(`  - 入场价: $${targetPosition.entryPrice}`);
+      console.log(`  - 未实现盈亏: $${targetPosition.unrealizedPnl}`);
+      console.log(`  - 保证金模式: ${(targetPosition as any).mgnMode || 'cross'}`);
+      
+      // 使用实际仓位的数量和保证金模式（已在上面检查过精度）
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const positionMgnMode = ((targetPosition as any).mgnMode as 'cross' | 'isolated' | undefined) || 'cross';
+      
+      // 🔧 根据账户持仓模式决定是否传递posSide
+      const isLongShortMode = accountConfig.posMode === 'long_short_mode';
+      const closingPosSide = isLongShortMode ? posSide : undefined;
+      
+      // 🔧 检查是否为限价平仓（有entryPrice参数）
+      const isLimitOrder = decision.entryPrice && decision.entryPrice > 0;
+      const orderType = isLimitOrder ? 'limit' : 'market';
+      const limitPrice = isLimitOrder ? decision.entryPrice : undefined;
+      
+      console.log(`[execute-decision] 📋 平仓参数:`);
+      console.log(`  - 交易对: ${symbol}`);
+      console.log(`  - 订单类型: ${orderType} ${isLimitOrder ? `@ $${limitPrice}` : ''}`);
+      console.log(`  - 方向: ${side}`);
+      console.log(`  - 数量: ${actualQuantity}张`);
+      console.log(`  - 保证金模式: ${positionMgnMode}`);
+      console.log(`  - 持仓模式: ${accountConfig.posMode}`);
+      console.log(`  - posSide: ${closingPosSide || 'undefined'} ${isLongShortMode ? '(双向持仓需要)' : '(单向持仓不传)'}`);
+      console.log(`  - reduceOnly: false (不使用，让OKX自动判断)`);
+
+      const mainOrder = await placeOrder(
+        symbol,
+        side,
+        orderType, // 🔧 支持限价单
+        actualQuantity,
+        limitPrice, // 🔧 限价单传入价格
+        closingPosSide, // 🔧 双向持仓传入posSide，单向持仓传undefined
+        false, // 🔧 不使用reduceOnly
+        positionMgnMode
+      );
+      
+      console.log(`[execute-decision] ✅ 平仓成功!`);
+      console.log(`[execute-decision] 订单ID: ${mainOrder.id}`);
+      console.log(`[execute-decision] 订单状态: ${mainOrder.status}`);
+      console.log('[execute-decision] ========================================\n');
+      
+      // 🔄 记录平仓反思（异步，不阻塞响应）
+      const exitPrice = mainOrder.average || (mainOrder as unknown as { price?: number }).price || 0;
+      const pnlAmount = targetPosition.unrealizedPnl || 0;
+      
+      // 查找对应的开仓决策ID（从活跃决策中查找）
+      const { queryActiveOpenDecisions } = await import('@/lib/db');
+      const activeDecisions = queryActiveOpenDecisions();
+      const matchingOpenDecision = activeDecisions.find(d => {
+        const titleUpper = d.title.toUpperCase();
+        return titleUpper.includes(decision.symbol) && 
+               ((posSide === 'long' && titleUpper.includes('OPEN_LONG')) ||
+                (posSide === 'short' && titleUpper.includes('OPEN_SHORT')));
+      });
+      
+      if (matchingOpenDecision) {
+        console.log(`[execute-decision] 📊 记录平仓反思: ${matchingOpenDecision.id}`);
+        try {
+          await recordTradeClose({
+            openDecisionId: matchingOpenDecision.id,
+            closeDecisionId: body.decisionId || 'manual-close',
+            exitPrice,
+            pnlAmount
+          });
+          console.log(`[execute-decision] ✅ 平仓反思记录已更新`);
+        } catch (reflectionError) {
+          console.error('[execute-decision] ⚠️ 记录平仓反思失败（不影响交易）:', reflectionError);
+          // 不影响交易执行，继续返回成功
+        }
+      } else {
+        console.warn('[execute-decision] ⚠️ 未找到对应的开仓决策，无法记录完整反思');
+        console.warn('[execute-decision] 提示：可能是手动平仓或该仓位由自动止损触发');
+      }
+      
+      return NextResponse.json({
+        success: true,
+        message: '平仓订单已执行',
+        order: {
+          orderId: mainOrder.id,
+          symbol,
+          side,
+          posSide,
+          quantity: actualQuantity,
+          status: mainOrder.status
+        },
+        decision: {
+          action: decision.action,
+          symbol: decision.symbol,
+          confidence: decision.confidence,
+          reasoning: decision.reasoning
+        }
+      });
+    }
+    
+    // ========== 以下是开仓逻辑 ==========
+    
+    // 检查开仓资金
     if (availableCash < 10) {
       return NextResponse.json({ 
         success: false, 
@@ -114,16 +278,8 @@ export async function POST(req: NextRequest) {
       // console.log('[execute-decision] 当前市价:', entryPrice); // ✅ 屏蔽
     }
     
-    // 不同币种的最大单笔订单金额限制（保守设置，避免超过OKX限额）
-    const maxOrderLimits: Record<string, number> = {
-      'BTC': 2000,   // BTC最大$2000 USDT
-      'ETH': 1500,   // ETH最大$1500 USDT
-      'SOL': 800,    // SOL最大$800 USDT
-      'BNB': 800,    // BNB最大$800 USDT
-      'XRP': 500,    // XRP最大$500 USDT（小币种更保守）
-      'DOGE': 500,   // DOGE最大$500 USDT
-    };
-    const maxOrderForSymbol = maxOrderLimits[decision.symbol] || 500;
+    // 不同币种的最大单笔订单金额限制（从 constants 导入）
+    const maxOrderForSymbol = MAX_ORDER_LIMITS[decision.symbol] || 500;
     
     // 确定请求的订单金额 - 严格按AI指定
     let requestedUSDT = 0;
@@ -212,150 +368,119 @@ export async function POST(req: NextRequest) {
     // 使用计算出的合约张数
     const quantity = marginCalc.contractSize;
 
-    // 构建交易对（OKX格式：BTC/USDT:USDT）
+    // ========== 执行开仓订单 ==========
+    console.log('\n[execute-decision] ========================================');
+    console.log('[execute-decision] 🚀 开仓操作开始');
+    console.log('[execute-decision] ========================================');
+    console.log(`[execute-decision] 开仓决策:`);
+    console.log(`  - 币种: ${decision.symbol}`);
+    console.log(`  - 操作: ${decision.action} (${decision.action === 'OPEN_LONG' ? '开多' : '开空'})`);
+    console.log(`  - 合约张数: ${quantity.toFixed(8)}张`);
+    console.log(`  - 名义价值: $${marginCalc.notionalValue.toFixed(2)}`);
+    console.log(`  - 所需保证金: $${marginCalc.requiredMargin.toFixed(2)}`);
+    console.log(`  - 手续费: $${marginCalc.totalFees.toFixed(4)}`);
+    console.log(`  - 总资金占用: $${marginCalc.recommendedAmount.toFixed(2)}`);
+
+    // 构建交易对
     const symbol = `${decision.symbol}/USDT:USDT`;
-    
-    // 确定订单方向
-    let side: 'buy' | 'sell';
-    let posSide: 'long' | 'short';
-
-    switch (decision.action) {
-      case 'OPEN_LONG':
-        side = 'buy';
-        posSide = 'long';
-        break;
-      case 'OPEN_SHORT':
-        side = 'sell';
-        posSide = 'short';
-        break;
-      case 'CLOSE_LONG':
-        side = 'sell';
-        posSide = 'long';
-        break;
-      case 'CLOSE_SHORT':
-        side = 'buy';
-        posSide = 'short';
-        break;
-      default:
-        return NextResponse.json({ 
-          success: false, 
-          error: `未知的操作类型: ${decision.action}` 
-        }, { status: 400 });
-    }
-
-    const reduceOnly = decision.action === 'CLOSE_LONG' || decision.action === 'CLOSE_SHORT';
-
-    // 如果是平仓，先检查是否真的有仓位
-    if (reduceOnly) {
-      console.log('[execute-decision] 检查是否有对应仓位...');
-      const positions = await fetchPositions();
-      const targetPosition = positions.find(p => 
-        p.coin === decision.symbol && 
-        ((decision.action === 'CLOSE_LONG' && p.side === 'long') ||
-         (decision.action === 'CLOSE_SHORT' && p.side === 'short'))
-      );
-      
-      if (!targetPosition) {
-        return NextResponse.json({ 
-          success: false, 
-          error: `无法平仓：账户中没有${decision.symbol}的${decision.action === 'CLOSE_LONG' ? '多头' : '空头'}仓位。可能已被止盈止损自动平仓，或之前开仓失败。` 
-        }, { status: 400 });
-      }
-      
-      console.log('[execute-decision] 找到仓位:', targetPosition);
-      
-      // 使用实际仓位的数量和保证金模式
-      const actualQuantity = Math.abs(Number(targetPosition.contracts || 0));
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const positionMgnMode = ((targetPosition as any).mgnMode as 'cross' | 'isolated' | undefined) || 'cross';
-      
-      console.log('[execute-decision] 平仓参数:', {
-        数量: actualQuantity,
-        保证金模式: positionMgnMode,
-        杠杆: targetPosition.leverage,
-        入场价: targetPosition.entryPrice
-      });
-      
-      // 直接使用实际仓位数量和保证金模式进行平仓
-      const mainOrder = await placeOrder(
-        symbol,
-        side,
-        'market',
-        actualQuantity,
-        undefined,
-        posSide,
-        true, // reduceOnly
-        positionMgnMode // ✅ 使用仓位的保证金模式
-      );
-      
-      console.log('[execute-decision] 平仓订单已下:', mainOrder);
-      
-      return NextResponse.json({
-        success: true,
-        message: '平仓订单已执行',
-        order: {
-          orderId: mainOrder.id,
-          symbol,
-          side,
-          posSide,
-          quantity: actualQuantity,
-          status: mainOrder.status
-        },
-        decision: {
-          action: decision.action,
-          symbol: decision.symbol,
-          confidence: decision.confidence,
-          reasoning: decision.reasoning
-        }
-      });
-    }
-
-    // 以下是开仓逻辑
-    console.log(`[execute-decision] 📋 订单: ${decision.symbol} ${side} ${quantity.toFixed(8)}张, 名义$${marginCalc.notionalValue.toFixed(0)}, 保证金$${marginCalc.requiredMargin.toFixed(0)}`);
-
-    // 确定保证金模式（默认全仓，未来可以从decision中读取）
+    const side: 'buy' | 'sell' = decision.action === 'OPEN_LONG' ? 'buy' : 'sell';
     const tdMode: 'cross' | 'isolated' = 'cross';
+    const instId = `${decision.symbol}-USDT-SWAP`;
     
-    // 1. 先设置杠杆倍数（仅开仓时需要）
-    if (!reduceOnly) {
-      const instId = `${decision.symbol}-USDT-SWAP`;
-      await setLeverage(instId, leverage, tdMode, posSide);
-      console.log(`[execute-decision] ⚙️ 杠杆: ${leverage}x, 模式: ${tdMode}`);
-    }
+    console.log(`[execute-decision] 订单参数:`);
+    console.log(`  - 交易对: ${symbol}`);
+    console.log(`  - instId: ${instId}`);
+    console.log(`  - 方向: ${side} (${side === 'buy' ? '买入' : '卖出'})`);
+    console.log(`  - 杠杆: ${leverage}x`);
+    console.log(`  - 保证金模式: ${tdMode}`);
+    console.log(`  - 当前价格: $${entryPrice}`);
+    console.log(`  - 止盈: ${decision.takeProfit ? '$' + decision.takeProfit : '无'}`);
+    console.log(`  - 止损: ${decision.stopLoss ? '$' + decision.stopLoss : '无'}`);
+    
+    // 1. 设置杠杆（不传posSide，兼容单向持仓模式）
+    console.log(`\n[execute-decision] 步骤1: 设置杠杆...`);
+    await setLeverage(instId, leverage, tdMode);
+    console.log(`[execute-decision] ✅ 杠杆已设置: ${leverage}x, 模式: ${tdMode}`);
 
-    // 2. 执行主订单（市价单）
+    // 2. 执行主订单（传递posSide参数）
+    // 🔧 修复：明确传递posSide参数以避免51000错误
+    console.log(`\n[execute-decision] 步骤2: 执行主订单...`);
+    const orderPosSide: 'long' | 'short' = decision.action === 'OPEN_LONG' ? 'long' : 'short';
+    console.log(`[execute-decision] posSide: ${orderPosSide} (${orderPosSide === 'long' ? '多头' : '空头'})`);
+    
     const mainOrder = await placeOrder(
       symbol,
       side,
       'market',
       quantity,
-      undefined, // 市价单无需价格
-      posSide,
-      reduceOnly,
-      tdMode // ✅ 使用统一的保证金模式
+      undefined,
+      orderPosSide, // 🔧 明确传递posSide参数
+      false,
+      tdMode
     );
 
-    // console.log('[execute-decision] 主订单已下单:', mainOrder); // ✅ 已在placeOrder中输出
+    console.log(`[execute-decision] ✅ 主订单已执行!`);
+    console.log(`  - 订单ID: ${mainOrder.id}`);
+    console.log(`  - 状态: ${mainOrder.status}`);
+    if (mainOrder.filled) console.log(`  - 成交数量: ${mainOrder.filled}`);
+    if (mainOrder.average) console.log(`  - 成交均价: $${mainOrder.average}`);
 
-    // 如果是开仓且有止盈止损，下条件单
+    // 3. 下止盈止损单
+    console.log(`\n[execute-decision] 步骤3: 设置止盈止损...`);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let tpslOrders: any[] = [];
-    if (!reduceOnly && (decision.takeProfit || decision.stopLoss)) {
+    if (decision.takeProfit || decision.stopLoss) {
       try {
-        const instId = `${decision.symbol}-USDT-SWAP`;
+        // 止盈止损需要posSide（判断方向）
+        const tpslPosSide: 'long' | 'short' = decision.action === 'OPEN_LONG' ? 'long' : 'short';
+        console.log(`[execute-decision] 止盈止损参数:`);
+        console.log(`  - 仓位方向: ${tpslPosSide}`);
+        console.log(`  - 数量: ${quantity.toFixed(8)}张`);
+        console.log(`  - 止盈价: ${decision.takeProfit ? '$' + decision.takeProfit : '无'}`);
+        console.log(`  - 止损价: ${decision.stopLoss ? '$' + decision.stopLoss : '无'}`);
+        
         tpslOrders = await placeTPSL(
           instId,
-          posSide,
+          tpslPosSide,
           quantity,
           decision.takeProfit,
           decision.stopLoss,
-          tdMode // ✅ 使用与主订单相同的保证金模式
+          tdMode
         );
-        console.log(`[execute-decision] ✅ 止盈止损: ${tpslOrders.length}个`);
+        console.log(`[execute-decision] ✅ 止盈止损已设置: ${tpslOrders.length}个订单`);
+        tpslOrders.forEach((order, idx) => {
+          console.log(`  [${idx + 1}] 类型: ${order.type}, 价格: $${order.price}`);
+        });
       } catch (tpslError) {
-        console.error('[execute-decision] 止盈止损单失败（主订单已成功）:', tpslError);
-        // 止盈止损失败不影响主订单，继续返回成功
+        console.error('[execute-decision] ⚠️ 止盈止损设置失败:', tpslError);
       }
+    } else {
+      console.log(`[execute-decision] ⚠️ 未设置止盈止损（AI未提供）`);
+    }
+    
+    console.log('[execute-decision] ========================================');
+    console.log('[execute-decision] ✅ 开仓操作完成!');
+    console.log('[execute-decision] ========================================\n');
+
+    // 为开仓定义posSide（用于返回结果）
+    const posSide: 'long' | 'short' = decision.action === 'OPEN_LONG' ? 'long' : 'short';
+    
+    // 📊 记录开仓反思（异步，不阻塞响应）
+    const decisionId = body.decisionId || `decision-${Date.now()}`;
+    const actualEntryPrice = mainOrder.average || entryPrice;
+    
+    console.log(`[execute-decision] 📊 记录开仓反思: ${decisionId}`);
+    try {
+      recordTradeOpen({
+        decisionId,
+        decision,
+        entryPrice: actualEntryPrice,
+        marketConditions: `开仓时市价: $${actualEntryPrice}, 杠杆: ${leverage}x, 合约数: ${quantity}`
+      });
+      console.log(`[execute-decision] ✅ 反思记录已创建`);
+    } catch (reflectionError) {
+      console.error(`[execute-decision] ⚠️ 反思记录创建失败（不影响交易）:`, reflectionError);
+      // 不影响交易执行，继续返回成功
     }
 
     const result = {

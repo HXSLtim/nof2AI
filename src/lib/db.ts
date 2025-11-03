@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import Database from 'better-sqlite3';
+import { SUPPORTED_COINS } from './constants';
 
 let db: Database.Database | null = null;
 
@@ -75,13 +76,92 @@ export function getDb(): Database.Database {
       prompt TEXT,
       reply TEXT
     );
+    CREATE TABLE IF NOT EXISTS coin_config (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS trade_reflections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      decision_id TEXT UNIQUE NOT NULL,
+      symbol TEXT NOT NULL,
+      action TEXT NOT NULL,
+      outcome TEXT,
+      reasoning TEXT,
+      market_conditions TEXT,
+      pnl_amount REAL,
+      pnl_percentage REAL,
+      holding_time_minutes INTEGER,
+      entry_price REAL,
+      exit_price REAL,
+      entry_ts INTEGER,
+      exit_ts INTEGER,
+      mistakes TEXT,
+      insights TEXT,
+      improvement TEXT,
+      confidence INTEGER,
+      leverage INTEGER,
+      size_usdt REAL,
+      actual_vs_expected TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS prompt_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version TEXT NOT NULL,
+      prompt_content TEXT NOT NULL,
+      performance_metrics TEXT,
+      win_rate REAL,
+      avg_pnl REAL,
+      total_trades INTEGER DEFAULT 0,
+      is_active BOOLEAN DEFAULT FALSE,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER
+    );
     CREATE INDEX IF NOT EXISTS idx_price_inst_ts ON price_snapshots(inst_id, ts);
     CREATE INDEX IF NOT EXISTS idx_ind3m_inst_ts ON indicators_3m(inst_id, ts);
     CREATE INDEX IF NOT EXISTS idx_ind4h_inst_ts ON indicators_4h(inst_id, ts);
     CREATE INDEX IF NOT EXISTS idx_decisions_ts ON decisions(ts DESC);
     CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status);
+    CREATE INDEX IF NOT EXISTS idx_reflections_decision ON trade_reflections(decision_id);
+    CREATE INDEX IF NOT EXISTS idx_reflections_symbol ON trade_reflections(symbol);
+    CREATE INDEX IF NOT EXISTS idx_reflections_outcome ON trade_reflections(outcome);
+    CREATE INDEX IF NOT EXISTS idx_reflections_created ON trade_reflections(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_prompt_versions_active ON prompt_versions(is_active);
   `);
   return db;
+}
+
+/**
+ * 保存币种配置
+ * @param enabledCoins 启用的币种列表，如 ['BTC', 'ETH']
+ */
+export function saveCoinToggles(enabledCoins: string[]): void {
+  const d = getDb();
+  const stmt = d.prepare('INSERT OR REPLACE INTO coin_config (key, value, updated_at) VALUES (?, ?, ?)');
+  stmt.run('enabled_coins', JSON.stringify(enabledCoins), Date.now());
+}
+
+/**
+ * 获取启用的币种列表
+ * @returns 启用的币种数组，如 ['BTC', 'ETH']，默认全部启用
+ */
+export function getEnabledCoins(): string[] {
+  const d = getDb();
+  const stmt = d.prepare('SELECT value FROM coin_config WHERE key = ?');
+  const row = stmt.get('enabled_coins') as { value: string } | undefined;
+  
+  // 导入默认币种列表（从顶部导入）
+  const DEFAULT_COINS: string[] = Array.from(SUPPORTED_COINS);
+  
+  if (row) {
+    try {
+      return JSON.parse(row.value) as string[];
+    } catch {
+      return DEFAULT_COINS;
+    }
+  }
+  
+  return DEFAULT_COINS;
 }
 
 /**
@@ -364,6 +444,9 @@ export function queryActiveOpenDecisions(): DecisionRow[] {
     `)
     .all() as DecisionRow[];
   
+  // 导入币种列表（从顶部导入）
+  const symbols: string[] = Array.from(SUPPORTED_COINS);
+  
   // 3. 构建币种和方向的映射（记录最后一次平仓时间）
   const closedPositions: Record<string, number> = {}; // key: "BTC-LONG", value: ts
   
@@ -371,7 +454,6 @@ export function queryActiveOpenDecisions(): DecisionRow[] {
     const title = close.title.toUpperCase();
     if (title.includes('CLOSE_LONG')) {
       // 提取币种
-      const symbols = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE'];
       for (const sym of symbols) {
         if (title.includes(sym)) {
           const key = `${sym}-LONG`;
@@ -379,7 +461,6 @@ export function queryActiveOpenDecisions(): DecisionRow[] {
         }
       }
     } else if (title.includes('CLOSE_SHORT')) {
-      const symbols = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE'];
       for (const sym of symbols) {
         if (title.includes(sym)) {
           const key = `${sym}-SHORT`;
@@ -392,7 +473,6 @@ export function queryActiveOpenDecisions(): DecisionRow[] {
   // 4. 过滤掉已被平仓的OPEN决策
   const activeDecisions = openDecisions.filter(open => {
     const title = open.title.toUpperCase();
-    const symbols = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE'];
     
     for (const sym of symbols) {
       if (title.includes(sym)) {
@@ -418,4 +498,323 @@ export function queryActiveOpenDecisions(): DecisionRow[] {
   
   // 5. 返回最近的活跃决策（降序）
   return activeDecisions.reverse();
+}
+
+// ==================== 交易反思记录存储 ====================
+
+export type TradeReflectionRow = {
+  id?: number;
+  decision_id: string;
+  symbol: string;
+  action: string;
+  outcome?: 'profit' | 'loss' | 'breakeven' | 'pending';
+  reasoning?: string;
+  market_conditions?: string;
+  pnl_amount?: number;
+  pnl_percentage?: number;
+  holding_time_minutes?: number;
+  entry_price?: number;
+  exit_price?: number;
+  entry_ts?: number;
+  exit_ts?: number;
+  mistakes?: string;
+  insights?: string;
+  improvement?: string;
+  confidence?: number;
+  leverage?: number;
+  size_usdt?: number;
+  actual_vs_expected?: string;
+  created_at: number;
+};
+
+/**
+ * 插入交易反思记录
+ */
+export function insertTradeReflection(reflection: TradeReflectionRow): void {
+  const d = getDb();
+  const stmt = d.prepare(`
+    INSERT OR REPLACE INTO trade_reflections (
+      decision_id, symbol, action, outcome, reasoning, market_conditions,
+      pnl_amount, pnl_percentage, holding_time_minutes,
+      entry_price, exit_price, entry_ts, exit_ts,
+      mistakes, insights, improvement,
+      confidence, leverage, size_usdt, actual_vs_expected,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  
+  stmt.run(
+    reflection.decision_id,
+    reflection.symbol,
+    reflection.action,
+    reflection.outcome ?? null,
+    reflection.reasoning ?? null,
+    reflection.market_conditions ?? null,
+    reflection.pnl_amount ?? null,
+    reflection.pnl_percentage ?? null,
+    reflection.holding_time_minutes ?? null,
+    reflection.entry_price ?? null,
+    reflection.exit_price ?? null,
+    reflection.entry_ts ?? null,
+    reflection.exit_ts ?? null,
+    reflection.mistakes ?? null,
+    reflection.insights ?? null,
+    reflection.improvement ?? null,
+    reflection.confidence ?? null,
+    reflection.leverage ?? null,
+    reflection.size_usdt ?? null,
+    reflection.actual_vs_expected ?? null,
+    reflection.created_at
+  );
+}
+
+/**
+ * 更新交易反思记录（用于平仓后更新结果）
+ */
+export function updateTradeReflection(decisionId: string, updates: Partial<TradeReflectionRow>): void {
+  const d = getDb();
+  
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  
+  if (updates.outcome !== undefined) { fields.push('outcome = ?'); values.push(updates.outcome); }
+  if (updates.pnl_amount !== undefined) { fields.push('pnl_amount = ?'); values.push(updates.pnl_amount); }
+  if (updates.pnl_percentage !== undefined) { fields.push('pnl_percentage = ?'); values.push(updates.pnl_percentage); }
+  if (updates.holding_time_minutes !== undefined) { fields.push('holding_time_minutes = ?'); values.push(updates.holding_time_minutes); }
+  if (updates.exit_price !== undefined) { fields.push('exit_price = ?'); values.push(updates.exit_price); }
+  if (updates.exit_ts !== undefined) { fields.push('exit_ts = ?'); values.push(updates.exit_ts); }
+  if (updates.mistakes !== undefined) { fields.push('mistakes = ?'); values.push(updates.mistakes); }
+  if (updates.insights !== undefined) { fields.push('insights = ?'); values.push(updates.insights); }
+  if (updates.improvement !== undefined) { fields.push('improvement = ?'); values.push(updates.improvement); }
+  if (updates.actual_vs_expected !== undefined) { fields.push('actual_vs_expected = ?'); values.push(updates.actual_vs_expected); }
+  
+  if (fields.length === 0) return;
+  
+  values.push(decisionId);
+  const sql = `UPDATE trade_reflections SET ${fields.join(', ')} WHERE decision_id = ?`;
+  const stmt = d.prepare(sql);
+  stmt.run(...values);
+}
+
+/**
+ * 查询交易反思记录
+ */
+export function queryTradeReflections(options?: {
+  symbol?: string;
+  outcome?: 'profit' | 'loss' | 'breakeven' | 'pending';
+  limit?: number;
+  since?: number;
+}): TradeReflectionRow[] {
+  const d = getDb();
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  
+  if (options?.symbol) {
+    conditions.push('symbol = ?');
+    params.push(options.symbol);
+  }
+  
+  if (options?.outcome) {
+    conditions.push('outcome = ?');
+    params.push(options.outcome);
+  }
+  
+  if (options?.since) {
+    conditions.push('created_at >= ?');
+    params.push(options.since);
+  }
+  
+  let sql = 'SELECT * FROM trade_reflections';
+  if (conditions.length > 0) {
+    sql += ' WHERE ' + conditions.join(' AND ');
+  }
+  sql += ' ORDER BY created_at DESC';
+  
+  if (options?.limit) {
+    sql += ' LIMIT ?';
+    params.push(options.limit);
+  }
+  
+  const stmt = d.prepare(sql);
+  return stmt.all(...params) as TradeReflectionRow[];
+}
+
+/**
+ * 根据决策ID获取反思记录
+ */
+export function getTradeReflectionByDecisionId(decisionId: string): TradeReflectionRow | null {
+  const d = getDb();
+  const stmt = d.prepare('SELECT * FROM trade_reflections WHERE decision_id = ?');
+  const row = stmt.get(decisionId) as TradeReflectionRow | undefined;
+  return row ?? null;
+}
+
+/**
+ * 获取交易统计数据
+ */
+export function getTradeStatistics(options?: { symbol?: string; days?: number }): {
+  totalTrades: number;
+  winningTrades: number;
+  losingTrades: number;
+  breakevenTrades: number;
+  winRate: number;
+  avgPnl: number;
+  totalPnl: number;
+  avgHoldingTime: number;
+} {
+  const d = getDb();
+  const conditions: string[] = ["outcome IS NOT NULL AND outcome != 'pending'"];
+  const params: unknown[] = [];
+  
+  if (options?.symbol) {
+    conditions.push('symbol = ?');
+    params.push(options.symbol);
+  }
+  
+  if (options?.days) {
+    const since = Date.now() - options.days * 24 * 3600 * 1000;
+    conditions.push('created_at >= ?');
+    params.push(since);
+  }
+  
+  const sql = `
+    SELECT 
+      COUNT(*) as total,
+      SUM(CASE WHEN outcome = 'profit' THEN 1 ELSE 0 END) as wins,
+      SUM(CASE WHEN outcome = 'loss' THEN 1 ELSE 0 END) as losses,
+      SUM(CASE WHEN outcome = 'breakeven' THEN 1 ELSE 0 END) as breakevens,
+      AVG(pnl_amount) as avg_pnl,
+      SUM(pnl_amount) as total_pnl,
+      AVG(holding_time_minutes) as avg_holding_time
+    FROM trade_reflections
+    WHERE ${conditions.join(' AND ')}
+  `;
+  
+  const stmt = d.prepare(sql);
+  const result = stmt.get(...params) as {
+    total: number;
+    wins: number;
+    losses: number;
+    breakevens: number;
+    avg_pnl: number | null;
+    total_pnl: number | null;
+    avg_holding_time: number | null;
+  };
+  
+  return {
+    totalTrades: result.total || 0,
+    winningTrades: result.wins || 0,
+    losingTrades: result.losses || 0,
+    breakevenTrades: result.breakevens || 0,
+    winRate: result.total > 0 ? (result.wins / result.total) * 100 : 0,
+    avgPnl: result.avg_pnl || 0,
+    totalPnl: result.total_pnl || 0,
+    avgHoldingTime: result.avg_holding_time || 0
+  };
+}
+
+// ==================== 提示词版本管理 ====================
+
+export type PromptVersionRow = {
+  id?: number;
+  version: string;
+  prompt_content: string;
+  performance_metrics?: string;
+  win_rate?: number;
+  avg_pnl?: number;
+  total_trades?: number;
+  is_active: boolean;
+  created_at: number;
+  updated_at?: number;
+};
+
+/**
+ * 插入提示词版本
+ */
+export function insertPromptVersion(version: PromptVersionRow): void {
+  const d = getDb();
+  const stmt = d.prepare(`
+    INSERT INTO prompt_versions (
+      version, prompt_content, performance_metrics,
+      win_rate, avg_pnl, total_trades, is_active,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  
+  stmt.run(
+    version.version,
+    version.prompt_content,
+    version.performance_metrics ?? null,
+    version.win_rate ?? null,
+    version.avg_pnl ?? null,
+    version.total_trades ?? 0,
+    version.is_active ? 1 : 0,
+    version.created_at,
+    version.updated_at ?? null
+  );
+}
+
+/**
+ * 更新提示词版本性能指标
+ */
+export function updatePromptVersionMetrics(version: string, metrics: {
+  win_rate?: number;
+  avg_pnl?: number;
+  total_trades?: number;
+  performance_metrics?: string;
+}): void {
+  const d = getDb();
+  const stmt = d.prepare(`
+    UPDATE prompt_versions 
+    SET win_rate = ?, avg_pnl = ?, total_trades = ?, 
+        performance_metrics = ?, updated_at = ?
+    WHERE version = ?
+  `);
+  
+  stmt.run(
+    metrics.win_rate ?? null,
+    metrics.avg_pnl ?? null,
+    metrics.total_trades ?? null,
+    metrics.performance_metrics ?? null,
+    Date.now(),
+    version
+  );
+}
+
+/**
+ * 设置活跃的提示词版本
+ */
+export function setActivePromptVersion(version: string): void {
+  const d = getDb();
+  
+  // 先将所有版本设为非活跃
+  d.prepare('UPDATE prompt_versions SET is_active = 0').run();
+  
+  // 再设置指定版本为活跃
+  d.prepare('UPDATE prompt_versions SET is_active = 1 WHERE version = ?').run(version);
+}
+
+/**
+ * 获取活跃的提示词版本
+ */
+export function getActivePromptVersion(): PromptVersionRow | null {
+  const d = getDb();
+  const stmt = d.prepare('SELECT * FROM prompt_versions WHERE is_active = 1 LIMIT 1');
+  const row = stmt.get() as PromptVersionRow | undefined;
+  return row ?? null;
+}
+
+/**
+ * 查询所有提示词版本
+ */
+export function queryPromptVersions(limit?: number): PromptVersionRow[] {
+  const d = getDb();
+  let sql = 'SELECT * FROM prompt_versions ORDER BY created_at DESC';
+  if (limit) {
+    sql += ' LIMIT ?';
+    const stmt = d.prepare(sql);
+    return stmt.all(limit) as PromptVersionRow[];
+  }
+  const stmt = d.prepare(sql);
+  return stmt.all() as PromptVersionRow[];
 }

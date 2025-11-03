@@ -240,6 +240,14 @@ AI_MODEL_ID=deepseek-chat
 
 ## 📖 学习资源
 
+### 📚 项目文档中心
+- [**📖 文档中心**](./docs/) - 完整的项目文档和指南
+  - [**⚙️ 配置指南**](./docs/config/) - 系统配置和API设置
+  - [**🚀 功能特性**](./docs/features/) - 系统功能详细说明
+  - [**🔧 修复记录**](./docs/fixes/) - 系统修复和优化历史
+  - [**📦 归档文档**](./docs/archive/) - 历史文档和记录
+
+### Next.js 技术栈
 要了解更多关于 Next.js 的信息，可以查看以下资源：
 
 - [Next.js 文档](https://nextjs.org/docs) - 了解 Next.js 的功能和 API
