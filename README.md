@@ -152,11 +152,55 @@ OKX_SECRET=your_api_secret
 OKX_PASSWORD=your_api_password
 OKX_SANDBOX=true  # 开发环境建议设为true
 
-# AI服务配置（可选多个）
-OPENAI_API_KEY=your_openai_key
-DEEPSEEK_API_KEY=your_deepseek_key
-MOONSHOT_API_KEY=your_moonshot_key
+# AI服务配置（三选一即可）
+# 方式1：使用通用配置（推荐）
+AI_SERVICE_URL=https://api.deepseek.com
+AI_API_KEY=your_deepseek_key
+AI_MODEL_ID=deepseek-chat
+
+# 方式2：使用OpenAI配置
+# OPENAI_BASE_URL=https://api.openai.com
+# OPENAI_API_KEY=your_openai_key
+# OPENAI_MODEL_NAME=gpt-4
+
+# 方式3：使用其他兼容OpenAI的服务
+# DEEPSEEK_API_BASE=https://api.deepseek.com
+# DEEPSEEK_API_KEY=your_deepseek_key
+# DEEPSEEK_MODEL_ID=deepseek-chat
 ```
+
+#### 支持的AI服务
+
+**1. DeepSeek（推荐，性价比高）**
+```env
+AI_SERVICE_URL=https://api.deepseek.com
+AI_API_KEY=sk-xxxxxxxxxx
+AI_MODEL_ID=deepseek-chat
+```
+
+**2. OpenAI**
+```env
+OPENAI_BASE_URL=https://api.openai.com
+OPENAI_API_KEY=sk-xxxxxxxxxx
+OPENAI_MODEL_NAME=gpt-4
+```
+
+**3. Moonshot（月之暗面）**
+```env
+AI_SERVICE_URL=https://api.moonshot.cn
+AI_API_KEY=sk-xxxxxxxxxx
+AI_MODEL_ID=moonshot-v1-8k
+```
+
+**4. Azure OpenAI**
+```env
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
+AZURE_OPENAI_API_KEY=your_azure_key
+AZURE_OPENAI_DEPLOYMENT=your_deployment_name
+```
+
+**5. 其他兼容OpenAI的服务**
+系统支持任何兼容OpenAI API格式的服务，只需配置相应的环境变量即可。
 
 ### 交易所配置
 
@@ -168,8 +212,9 @@ MOONSHOT_API_KEY=your_moonshot_key
 ## 📚 核心功能
 
 ### AI交易系统
-- **智能决策生成**：基于技术指标和市场数据
-- **多AI服务支持**：OpenAI、DeepSeek、Moonshot等
+- **智能决策生成**：基于技术指标和市场数据的AI决策
+- **多AI服务兼容**：支持DeepSeek、OpenAI、Moonshot、Azure OpenAI等
+- **统一接口设计**：自动适配不同AI服务商的API格式
 - **风险自动控制**：止盈止损、仓位管理
 - **实时监控**：账户权益、持仓状态跟踪
 
@@ -198,7 +243,7 @@ MOONSHOT_API_KEY=your_moonshot_key
 - **UI组件库**：Ant Design 5.28.0
 - **数据库**：Better SQLite3
 - **交易所集成**：OKX V5 API (CCXT)
-- **AI服务**：多提供商兼容接口
+- **AI服务**：统一兼容OpenAI格式的多AI服务接口
 - **开发语言**：TypeScript
 
 ## 🔧 系统特性
