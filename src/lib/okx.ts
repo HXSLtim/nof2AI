@@ -265,17 +265,20 @@ export async function placeOrder(
     console.log(`[placeOrder] 币数量: ${coinsAmount} ${coin}`);
     
     // 构建订单参数
-    // ⚠️ 合约张数必须是lotSize的整数倍（如0.01的整数倍）
+    // ⚠️ 合约张数必须是lotSize的整数倍
     const roundedAmount = Math.floor(amount / lotSize) * lotSize;
     
     if (roundedAmount < minSz) {
       throw new Error(`合约张数不足最小值${minSz}张（计算值: ${amount.toFixed(4)}张）`);
     }
     
-    // 🔧 修复浮点数精度问题：toFixed(2)然后转回数字
-    const preciseAmount = Number(roundedAmount.toFixed(2));
+    // 🔧 修复浮点数精度问题
+    // 如果lotSz=1，取整数；如果lotSz=0.01，保留2位小数
+    const preciseAmount = lotSize >= 1 
+      ? Math.floor(roundedAmount)
+      : Number(roundedAmount.toFixed(2));
     
-    console.log(`[placeOrder] 📐 张数: ${amount.toFixed(4)} → ${preciseAmount} (lotSize=${lotSize})`);
+    console.log(`[placeOrder] 📐 张数: ${amount.toFixed(4)} → ${preciseAmount} (lotSize=${lotSize}, minSz=${minSz})`);
     
     const orderParams: any = {
       instId,

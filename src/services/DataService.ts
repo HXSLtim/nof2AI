@@ -362,6 +362,16 @@ export class DataService {
    * 初始化WebSocket（仅客户端）
    */
   async initWebSocket(): Promise<void> {
+    // ⚠️ WebSocket需要API密钥，不能在浏览器客户端使用
+    // 只能在服务端使用，但DataService运行在客户端
+    // 所以暂时禁用WebSocket
+    console.log('[DataService] WebSocket功能已禁用（客户端无法安全使用API密钥）');
+    console.log('[DataService] 将使用定时刷新模式');
+    this.wsEnabled = false;
+    this.wsConnected = false;
+    return;
+    
+    /* WebSocket代码暂时注释
     // 只在客户端启用WebSocket
     if (typeof window === 'undefined') {
       console.log('[DataService] 服务端环境，跳过WebSocket初始化');
@@ -447,6 +457,7 @@ export class DataService {
       this.wsEnabled = false;
       this.wsConnected = false;
     }
+    */
   }
 
   /**

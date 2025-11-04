@@ -60,17 +60,15 @@ export async function POST(req: NextRequest) {
     // 获取账户信息
     const accountTotal = await fetchAccountTotal();
     
-    // 🔐 使用资金调度器获取实时可用资金（带锁）
-    console.log('[execute-decision] 💰 查询可用资金（通过资金调度器）...');
-    const availableCash = fundScheduler.getAvailable() > 0 
-      ? fundScheduler.getAvailable()  // 使用调度器中的资金
-      : await fundScheduler.refresh();  // 首次或资金为0时刷新
+    // 🔐 每次执行前实时刷新资金（不重置分配）
+    console.log('[execute-decision] 💰 实时刷新可用资金...');
+    const okxAvailableCash = await fundScheduler.refresh(false);  // false=不清空分配记录
     
     const currentPositions = await fetchPositions();
 
     console.log('[execute-decision] 账户信息:', { 
       总资产: accountTotal.toFixed(2), 
-      可用资金_调度器: availableCash.toFixed(2), 
+      可用资金: okxAvailableCash.toFixed(2),
       币种: d.symbol, 
       操作: d.action 
     });
@@ -269,10 +267,10 @@ export async function POST(req: NextRequest) {
     // ========== 以下是开仓逻辑 ==========
     
     // 检查开仓资金
-    if (availableCash < 10) {
+    if (okxAvailableCash < 10) {
       return NextResponse.json({ 
         success: false, 
-        error: `账户可用资金不足（仅$${availableCash.toFixed(2)}）。请充值或等待现有仓位平仓释放资金。` 
+        error: `账户可用资金不足（仅$${okxAvailableCash.toFixed(2)}）。请充值或等待现有仓位平仓释放资金。` 
       }, { status: 400 });
     }
 
@@ -300,7 +298,7 @@ export async function POST(req: NextRequest) {
     
     // 🔧 重构：基于百分比计算实际USDT金额
     console.log(`\n[execute-decision] ========== 仓位计算开始 ==========`);
-    console.log(`[execute-decision] 可用资金: $${availableCash.toFixed(2)}`);
+    console.log(`[execute-decision] 可用资金: $${okxAvailableCash.toFixed(2)} (实时刷新)`);
     
     let requestedUSDT = 0;
     let positionPercent = 0;
@@ -318,35 +316,35 @@ export async function POST(req: NextRequest) {
         positionPercent = 50;
       }
       
-      // 计算实际USDT金额 = 可用资金 × 百分比
-      requestedUSDT = availableCash * (positionPercent / 100);
+      // ✅ 计算实际USDT金额 = OKX可用资金 × 百分比
+      requestedUSDT = okxAvailableCash * (positionPercent / 100);
       
       console.log(`[execute-decision] 💡 AI指定百分比: ${d.positionSizePercent}%`);
       console.log(`[execute-decision] 实际使用百分比: ${positionPercent}%`);
-      console.log(`[execute-decision] 计算金额: $${availableCash.toFixed(2)} × ${positionPercent}% = $${requestedUSDT.toFixed(2)}`);
+      console.log(`[execute-decision] ✅ 计算金额: $${okxAvailableCash.toFixed(2)} × ${positionPercent}% = $${requestedUSDT.toFixed(2)}`);
       
     } else if (d.sizeUSDT && d.sizeUSDT > 0) {
       // 兼容旧格式：直接指定USDT金额
       requestedUSDT = d.sizeUSDT;
-      positionPercent = availableCash > 0 ? (requestedUSDT / availableCash * 100) : 0;
+      positionPercent = okxAvailableCash > 0 ? (requestedUSDT / okxAvailableCash * 100) : 0;
       
       console.log(`[execute-decision] 💡 AI指定金额(旧格式): $${d.sizeUSDT}`);
-      console.log(`[execute-decision] 相当于: ${positionPercent.toFixed(1)}% 可用资金`);
+      console.log(`[execute-decision] 相当于: ${positionPercent.toFixed(1)}% OKX可用资金`);
       
-      // 限制：不超过可用资金的90%
-      const maxUsable = availableCash * 0.9;
+      // 限制：不超过OKX可用资金的90%
+      const maxUsable = okxAvailableCash * 0.9;
       if (requestedUSDT > maxUsable) {
         requestedUSDT = maxUsable;
         positionPercent = 90;
-        console.log(`[execute-decision] ⚠️ 限制为可用资金90%: $${requestedUSDT.toFixed(2)}`);
+        console.log(`[execute-decision] ⚠️ 限制为OKX可用资金90%: $${requestedUSDT.toFixed(2)}`);
       }
       
     } else {
       // AI未提供任何金额信息，系统兜底
       console.warn(`[execute-decision] ⚠️ AI未提供仓位大小，使用默认30%`);
       positionPercent = 30;
-      requestedUSDT = availableCash * 0.3;
-      console.log(`[execute-decision] 系统默认: $${requestedUSDT.toFixed(2)} (30%可用资金)`);
+      requestedUSDT = okxAvailableCash * 0.3;
+      console.log(`[execute-decision] 系统默认: $${requestedUSDT.toFixed(2)} (30% OKX可用资金)`);
     }
     
     // ⚠️ 检查最大订单限制（在最小金额检查之前）
@@ -356,7 +354,7 @@ export async function POST(req: NextRequest) {
     if (requestedUSDT > maxOrderLimit) {
       console.warn(`[execute-decision] ⚠️ 订单金额$${requestedUSDT.toFixed(2)}超过限制$${maxOrderLimit}，强制调整`);
       requestedUSDT = maxOrderLimit;
-      positionPercent = (requestedUSDT / availableCash) * 100;
+      positionPercent = (requestedUSDT / okxAvailableCash) * 100;
       console.log(`[execute-decision] ✅ 调整后: $${requestedUSDT.toFixed(2)} (${positionPercent.toFixed(1)}%)`);
     } else {
       console.log(`[execute-decision] ✅ ${d.symbol} 金额$${requestedUSDT.toFixed(2)}在限制内`);
@@ -367,7 +365,7 @@ export async function POST(req: NextRequest) {
     if (requestedUSDT < MIN_ORDER_USDT) {
       return NextResponse.json({
         success: false,
-        error: `订单金额过小：$${requestedUSDT.toFixed(2)} < $${MIN_ORDER_USDT}最低要求。可用资金仅$${availableCash.toFixed(2)}，建议等待资金充足后再开仓。`
+        error: `订单金额过小：$${requestedUSDT.toFixed(2)} < $${MIN_ORDER_USDT}最低要求。OKX可用资金$${okxAvailableCash.toFixed(2)}，但计算出的金额太小。`
       }, { status: 400 });
     }
     
@@ -402,16 +400,16 @@ export async function POST(req: NextRequest) {
     console.log(`  - 名义价值: $${oneContractNotional.toFixed(2)}`);
     console.log(`  - 保证金: $${oneContractMargin.toFixed(2)}`);
     console.log(`  - 含手续费: $${oneContractTotal.toFixed(2)}`);
-    console.log(`可用资金: $${availableCash.toFixed(2)}`);
+    console.log(`可用资金: $${okxAvailableCash.toFixed(2)} (实时)`);
     
-    if (availableCash < oneContractTotal) {
+    if (okxAvailableCash < oneContractTotal) {
       console.error(`[execute-decision] ❌ 资金不足1张合约`);
       return NextResponse.json({
         success: false,
-        error: `资金不足：开1张${d.symbol}需要约$${oneContractTotal.toFixed(2)}（${leverage}x杠杆），当前可用资金仅$${availableCash.toFixed(2)}。\n\n建议：\n1. 充值更多USDT（至少$${Math.ceil(oneContractTotal)}）\n2. 选择价格更低的币种（SOL、XRP、DOGE）\n3. 提高杠杆倍数（不推荐，风险高）\n4. 等待现有仓位平仓释放资金`,
+        error: `资金不足：开1张${d.symbol}需要约$${oneContractTotal.toFixed(2)}（${leverage}x杠杆），可用资金仅$${okxAvailableCash.toFixed(2)}。\n\n建议：\n1. 充值更多USDT（至少$${Math.ceil(oneContractTotal)}）\n2. 选择价格更低的币种（SOL、XRP、DOGE）\n3. 等待现有仓位平仓释放资金`,
         minRequired: oneContractTotal,
-        available: availableCash,
-        shortage: oneContractTotal - availableCash
+        available: okxAvailableCash,
+        shortage: oneContractTotal - okxAvailableCash
       }, { status: 400 });
     }
     
@@ -421,7 +419,7 @@ export async function POST(req: NextRequest) {
     // === 使用保证金计算器精确计算 ===
     console.log(`\n[execute-decision] ========== 保证金计算开始 ==========`);
     console.log(`币种: ${d.symbol}, 价格: ${entryPrice}, 杠杆: ${leverage}x`);
-    console.log(`请求金额: $${requestedUSDT.toFixed(2)}, 可用资金: $${availableCash.toFixed(2)}`);
+    console.log(`请求金额: $${requestedUSDT.toFixed(2)}, 可用资金: $${okxAvailableCash.toFixed(2)} (实时)`);
     
     // 计算保证金需求
     let marginCalc = calculateMarginRequirement(
@@ -433,8 +431,8 @@ export async function POST(req: NextRequest) {
     
     console.log(formatMarginCalculation(marginCalc, d.symbol));
     
-    // 验证是否有足够资金
-    let validation = validateSufficientMargin(availableCash, marginCalc);
+    // 验证是否有足够资金（使用实时刷新的资金）
+    let validation = validateSufficientMargin(okxAvailableCash, marginCalc);
     
     if (!validation.isValid) {
       console.log(`[execute-decision] ⚠️ 资金不足，尝试自动调整订单大小...`);
@@ -445,20 +443,20 @@ export async function POST(req: NextRequest) {
         entryPrice,
         requestedUSDT,
         leverage,
-        availableCash
+        okxAvailableCash
       );
       
       if (!adjusted) {
         console.log(`[execute-decision] ❌ 无法调整订单：即使使用全部可用资金也无法满足最小合约张数要求`);
         return NextResponse.json({ 
           success: false, 
-          error: `资金不足且无法调整订单。${validation.message}\n\n建议：\n1. 充值更多USDT\n2. 等待现有仓位平仓释放资金\n3. 降低杠杆倍数\n4. 选择价格更低的币种` 
+          error: `资金不足且无法调整订单。${validation.message}\n\n可用资金: $${okxAvailableCash.toFixed(2)}\n\n建议：\n1. 充值更多USDT\n2. 等待现有仓位平仓释放资金\n3. 降低杠杆倍数\n4. 选择价格更低的币种` 
         }, { status: 400 });
       }
       
       // 使用调整后的结果
       marginCalc = adjusted;
-      validation = validateSufficientMargin(availableCash, marginCalc);
+      validation = validateSufficientMargin(okxAvailableCash, marginCalc);
       
       console.log(`[execute-decision] ✅ 订单已自动调整: $${requestedUSDT} → $${marginCalc.actualUSDT.toFixed(2)}`);
     }
@@ -481,7 +479,7 @@ export async function POST(req: NextRequest) {
       currentPositions,
       d,
       accountTotal,
-      availableCash,
+      okxAvailableCash,
       marginCalc.notionalValue,
       marginCalc.requiredMargin  // 传入保证金
     );

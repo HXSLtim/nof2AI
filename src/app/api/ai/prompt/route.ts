@@ -7,6 +7,7 @@ import { parseDecisionFromText } from '@/lib/ai-trading-prompt';
 import { SUPPORTED_COINS } from '@/lib/constants';
 import { bollingerBands, adx, calculateSignalStrength } from '@/lib/advanced-indicators';
 import { StrategyFusion, TrendFollowingStrategy, MeanReversionStrategy, BreakoutStrategy, MomentumStrategy } from '@/lib/trading-strategies';
+import { getReflectionsForPromptOptimization } from '@/lib/trade-reflection';
 
 /**
  * 生成符合 README 模板的 AI 提示词
@@ -50,7 +51,8 @@ export async function GET(req: NextRequest) {
     /**
      * 序列说明：调整为"最新 → 最旧"以便快速查看最近状态
      */
-    const header = `ALL OF THE PRICE OR SIGNAL DATA BELOW IS ORDERED: NEWEST → OLDEST\n\nTimeframes note: Unless stated otherwise in a section title, intraday series are provided at 3‑minute intervals. If a coin uses a different interval, it is explicitly stated in that coin's section.\n\nCURRENT MARKET STATE FOR ALL COINS`;
+    const analysisScope = targetSymbol ? `${targetSymbol} ONLY` : 'ALL COINS';
+    const header = `ALL OF THE PRICE OR SIGNAL DATA BELOW IS ORDERED: NEWEST → OLDEST\n\nTimeframes note: Unless stated otherwise in a section title, intraday series are provided at 3‑minute intervals. If a coin uses a different interval, it is explicitly stated in that coin's section.\n\nCURRENT MARKET STATE FOR ${analysisScope}\n\n⚠️ IMPORTANT: ${targetSymbol ? `You are analyzing ${targetSymbol} ONLY. DO NOT make decisions for other coins!` : 'Analyze all coins and make decisions for each.'}`;
 
     // === 优化：批量获取所有币种价格，减少请求次数 ===
     const now = Date.now();
@@ -284,11 +286,18 @@ Advanced Indicators:
     const activeDecisions = queryActiveOpenDecisions();
     
     // 🔧 修复：只保留在实际交易所仓位中存在的决策（过滤掉已被止损的）
+    // 🔧 如果指定了单个币种，只显示该币种的决策
     const actualActiveDecisions = activeDecisions.filter(d => {
       const parsed = parseDecisionFromText(d.reply || '');
       if (!parsed) return false;
       
       const symbol = parsed.symbol;
+      
+      // 如果指定了币种，只保留该币种
+      if (targetSymbol && symbol !== targetSymbol) {
+        return false;
+      }
+      
       const isLong = parsed.action.includes('LONG');
       
       // 检查是否在实际仓位中存在匹配的仓位
@@ -364,14 +373,19 @@ Advanced Indicators:
       return `{'symbol': '${sym}', 'side': '${side}', 'quantity': ${f(qty)}, 'entry_price': ${f(entry)}, 'current_price': ${f(mark)}, 'liquidation_price': ${f(liq)}, 'unrealized_pnl': ${f(upl)}, 'leverage': ${f(lev)}, 'exit_plan': ${exitPlan}, 'confidence': ${f(confidence)}, 'risk_usd': ${f(riskUsd)}, 'sl_oid': -1, 'tp_oid': -1, 'wait_for_fill': False, 'entry_oid': -1, 'notional_usd': ${f(notional)}}`;
     };
     
-    // 格式化仓位行（positions 已在前面获取）
-    const positionsLine = positions.length
-      ? `\n\nCURRENT LIVE POSITIONS (from OKX exchange, these are your ACTUAL positions right now): ${positions.map(formatPosition).join(' ')}`
-      : `\n\nCURRENT LIVE POSITIONS (from OKX exchange): None - You have NO open positions currently`;
+    // 🔧 过滤仓位：如果指定了单个币种，只显示该币种的仓位
+    const filteredPositions = targetSymbol 
+      ? positions.filter(p => String(p.coin || '').toUpperCase() === targetSymbol)
+      : positions;
+    
+    // 格式化仓位行
+    const positionsLine = filteredPositions.length
+      ? `\n\nCURRENT LIVE POSITIONS (from OKX exchange, these are your ACTUAL positions right now): ${filteredPositions.map(formatPosition).join(' ')}`
+      : `\n\nCURRENT LIVE POSITIONS (from OKX exchange): None - You have NO open positions${targetSymbol ? ` for ${targetSymbol}` : ''} currently`;
     
     // 生成仓位摘要（方便AI快速识别，包含手续费计算）
-    const positionSummary = positions.length > 0
-      ? `\n\nQUICK SUMMARY - You currently have:\n${positions.map(p => {
+    const positionSummary = filteredPositions.length > 0
+      ? `\n\nQUICK SUMMARY - You currently have${targetSymbol ? ` (${targetSymbol} only)` : ''}:\n${filteredPositions.map(p => {
           const sym = String(p.coin || '');
           const side = String(p.side || '').toLowerCase();
           const upl = Number(p.unrealizedPnl || 0);
@@ -399,6 +413,8 @@ Advanced Indicators:
       positionSummary,
       `\n\n${sentimentText}`,
       activeDecisionsText,
+      await generateReflectionSection(targetSymbol),  // 🔥 添加反思数据
+      targetSymbol ? `\n\n🎯 ANALYSIS SCOPE RESTRICTION:\n⚠️ YOU ARE ANALYZING ${targetSymbol} ONLY!\n⚠️ DO NOT make decisions for other coins (BTC, ETH, SOL, etc.)\n⚠️ Your decision MUST have "symbol": "${targetSymbol}"\n⚠️ If you suggest a different coin, your decision will be REJECTED!\n\nExample CORRECT decision:\n{\n  "symbol": "${targetSymbol}",\n  "action": "OPEN_LONG",\n  "confidence": 75,\n  "position_size_percent": 25,\n  "leverage": 5,\n  ...\n}\n\nExample WRONG decision (will be rejected):\n{\n  "symbol": "BTC",  ← WRONG! You are analyzing ${targetSymbol}!\n  ...\n}` : '',
       `\n\n⚠️ CRITICAL RULES FOR CLOSE ACTIONS:
 1. ONLY close positions that exist in "CURRENT LIVE POSITIONS" section above
 2. If "CURRENT LIVE POSITIONS" shows "None", DO NOT issue any CLOSE action
@@ -407,11 +423,11 @@ Advanced Indicators:
    - Already closed by Stop Loss (SL)
    - The open order failed or was cancelled
 4. DO NOT try to close a position that doesn't exist - this will cause an error
-5. Before any CLOSE_LONG or CLOSE_SHORT action, VERIFY the position exists in live positions
+5. Before any CLOSE_LONG or CLOSE_SHORT action, VERIFY the position exists in live positions${targetSymbol ? ` for ${targetSymbol}` : ''}
 
 Example check:
-- If you see BTC LONG in live positions → OK to issue CLOSE_LONG for BTC
-- If you DON'T see BTC LONG in live positions → DO NOT issue CLOSE_LONG for BTC (already closed)`,
+- If you see ${targetSymbol || 'BTC'} LONG in live positions → OK to issue CLOSE_LONG for ${targetSymbol || 'BTC'}
+- If you DON'T see ${targetSymbol || 'BTC'} LONG in live positions → DO NOT issue CLOSE_LONG for ${targetSymbol || 'BTC'} (already closed)`,
     ].join('\n');
 
     const prompt = [header, '', sections.join('\n\n'), '', footer].join('\n');
@@ -421,6 +437,81 @@ Example check:
     return NextResponse.json({ success: false, error: err?.message || 'failed to compose prompt' }, { status: 500 });
   }
 }
+/**
+ * 生成反思数据部分
+ * 为AI提供历史交易的经验教训
+ */
+async function generateReflectionSection(targetSymbol?: string): Promise<string> {
+  try {
+    const reflectionData = getReflectionsForPromptOptimization();
+    
+    // 如果指定了币种，过滤该币种的反思
+    const losses = targetSymbol
+      ? reflectionData.recentLosses.filter(r => r.symbol === targetSymbol)
+      : reflectionData.recentLosses;
+    
+    const wins = targetSymbol
+      ? reflectionData.recentWins.filter(r => r.symbol === targetSymbol)
+      : reflectionData.recentWins;
+    
+    if (losses.length === 0 && wins.length === 0) {
+      return '\n\n📚 TRADING REFLECTIONS: No historical trades yet. This is your first trading session.';
+    }
+    
+    const sections: string[] = ['\n\n📚 TRADING REFLECTIONS (Learn from History):'];
+    
+    // 最近亏损交易的教训
+    if (losses.length > 0) {
+      sections.push('\n🔴 RECENT LOSSES (What to AVOID):');
+      losses.slice(0, 3).forEach((loss, i) => {
+        const pnlPct = loss.pnl_percentage ? `${loss.pnl_percentage.toFixed(2)}%` : 'N/A';
+        const mistakes = loss.mistakes || '未分析';
+        const improvement = loss.improvement || '';
+        sections.push(`${i + 1}. ${loss.symbol} ${loss.action}: Loss ${pnlPct}`);
+        sections.push(`   Mistakes: ${mistakes}`);
+        if (improvement) {
+          sections.push(`   Learn: ${improvement.substring(0, 150)}`);
+        }
+      });
+    }
+    
+    // 最近盈利交易的成功模式
+    if (wins.length > 0) {
+      sections.push('\n✅ RECENT WINS (What WORKED):');
+      wins.slice(0, 3).forEach((win, i) => {
+        const pnlPct = win.pnl_percentage ? `+${win.pnl_percentage.toFixed(2)}%` : 'N/A';
+        const insights = win.insights || '未分析';
+        sections.push(`${i + 1}. ${win.symbol} ${win.action}: Profit ${pnlPct}`);
+        sections.push(`   Success: ${insights.substring(0, 150)}`);
+      });
+    }
+    
+    // 常见错误模式（去重）
+    if (reflectionData.commonMistakes.length > 0) {
+      sections.push('\n⚠️ COMMON MISTAKES TO AVOID:');
+      reflectionData.commonMistakes.slice(0, 5).forEach((mistake, i) => {
+        sections.push(`${i + 1}. ${mistake}`);
+      });
+    }
+    
+    // 成功模式（去重）
+    if (reflectionData.successPatterns.length > 0) {
+      sections.push('\n🎯 SUCCESS PATTERNS TO FOLLOW:');
+      reflectionData.successPatterns.slice(0, 5).forEach((pattern, i) => {
+        sections.push(`${i + 1}. ${pattern}`);
+      });
+    }
+    
+    sections.push('\n💡 APPLY THESE LESSONS: Use the mistakes to avoid bad trades, and success patterns to identify good opportunities.');
+    
+    return sections.join('\n');
+    
+  } catch (error) {
+    console.error('[generateReflectionSection] Error:', error);
+    return '\n\n📚 TRADING REFLECTIONS: Error loading reflection data.';
+  }
+}
+
 /**
  * 指定 Node.js 运行时
  * @remarks 路由依赖 SQLite 与 Node 内置模块，需使用 Node 运行时。

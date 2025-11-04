@@ -40,11 +40,23 @@ class FundScheduler {
 
   /**
    * 刷新可用资金（从OKX获取最新值）
+   * 
+   * @param resetAllocations 是否清空所有分配（默认true，每次AI决策周期开始时应该重置）
    */
-  async refresh(): Promise<number> {
+  async refresh(resetAllocations: boolean = true): Promise<number> {
     // 使用互斥锁确保线程安全
     return this.withLock(async () => {
       console.log('[FundScheduler] 🔄 刷新可用资金...');
+      
+      // 🔧 清空所有旧分配（新的决策周期，之前的分配已失效）
+      if (resetAllocations && this.allocations.size > 0) {
+        console.warn(`[FundScheduler] ⚠️ 清空${this.allocations.size}个旧分配`);
+        this.allocations.forEach((alloc, symbol) => {
+          const age = Math.floor((Date.now() - alloc.timestamp) / 1000);
+          console.log(`[FundScheduler]    - ${symbol}: $${alloc.allocatedAmount.toFixed(2)} (${age}秒前)`);
+        });
+        this.allocations.clear();
+      }
       
       try {
         const freshFunds = await fetchAvailableUSDT();

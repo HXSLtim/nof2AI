@@ -4,7 +4,7 @@
  * 用于准确计算OKX交易所所需的保证金和手续费，避免因资金不足导致下单失败
  */
 
-import { TRADING_FEES, MIN_CONTRACT_SIZE } from './constants';
+import { TRADING_FEES, MIN_CONTRACT_SIZE, CONTRACT_VALUES } from './constants';
 
 /**
  * 交易费率配置（从 constants 导入）
@@ -72,24 +72,32 @@ export function calculateMarginRequirement(
   // 1. 计算名义价值 = 保证金 × 杠杆
   const notionalValue = sizeUSDT * leverage;
   
-  // 2. 计算合约张数 = 名义价值 / 价格
-  // 根据OKX官方公式：张数 = (保证金 × 杠杆) / 价格
-  const rawContractSize = notionalValue / entryPrice;
+  // 2. 获取合约面值（每张包含多少币）
+  const ctVal = CONTRACT_VALUES[symbol] || 1;
   
-  // 3. ⚠️ OKX USDT永续合约 lotSz = 0.01，合约张数必须是0.01的整数倍
+  // 3. 计算每张合约的USDT价值 = 单币价格 × 合约面值
+  const pricePerContract = entryPrice * ctVal;
+  
+  // 4. 计算合约张数 = 名义价值 / 每张合约价值
+  // 根据OKX官方公式：张数 = (保证金 × 杠杆) / (价格 × ctVal)
+  const rawContractSize = notionalValue / pricePerContract;
+  
+  // 5. ⚠️ OKX USDT永续合约 lotSz = 0.01，合约张数必须是0.01的整数倍
   // 向下取整到0.01的倍数，最小0.01张
   const contractSize = Math.max(0.01, Math.floor(rawContractSize * 100) / 100);
   
   console.log(`[margin-calculator] 💰 保证金: $${sizeUSDT.toFixed(2)}, 杠杆: ${leverage}x`);
+  console.log(`[margin-calculator] 📏 ${symbol} ctVal: ${ctVal} (1张=${ctVal}个币)`);
+  console.log(`[margin-calculator] 💵 每张价值: $${pricePerContract.toFixed(2)}`);
   console.log(`[margin-calculator] 📊 名义价值: $${notionalValue.toFixed(2)}`);
   console.log(`[margin-calculator] 📐 理论张数: ${rawContractSize.toFixed(4)}张`);
   console.log(`[margin-calculator] ✅ 实际张数: ${contractSize}张 (0.01倍数)`);
   
-  // 4. 重新计算实际名义价值（基于整数张数）
-  const actualNotionalValue = contractSize * entryPrice;
+  // 6. 重新计算实际名义价值（基于调整后的张数和每张价值）
+  const actualNotionalValue = contractSize * pricePerContract;
   
-  // 5. 重新计算实际所需保证金（基于整数张数）
-  // 根据OKX公式：保证金 = (张数 × 价格) / 杠杆
+  // 7. 重新计算实际所需保证金（基于整数张数）
+  // 根据OKX公式：保证金 = (张数 × 每张价值) / 杠杆
   const requiredMargin = actualNotionalValue / leverage;
   
   // 6. 计算手续费（基于实际名义价值）

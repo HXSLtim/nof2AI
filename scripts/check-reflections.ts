@@ -12,14 +12,12 @@ try {
   const db = getDb();
   
   // 1. 检查表是否存在
-  console.log('📋 步骤1：检查数据库表...');
   const tables = db.prepare(`
     SELECT name FROM sqlite_master 
     WHERE type='table' 
     AND name IN ('trade_reflections', 'prompt_versions', 'decisions')
   `).all() as { name: string }[];
   
-  console.log(`✅ 找到 ${tables.length} 个表:`, tables.map(t => t.name).join(', '));
   
   if (!tables.find(t => t.name === 'trade_reflections')) {
     console.error('❌ trade_reflections 表不存在！');
@@ -28,13 +26,10 @@ try {
   }
   
   // 2. 检查反思记录数量
-  console.log('\n📊 步骤2：统计反思记录...');
   const totalCount = db.prepare('SELECT COUNT(*) as count FROM trade_reflections').get() as { count: number };
   const pendingCount = db.prepare("SELECT COUNT(*) as count FROM trade_reflections WHERE outcome = 'pending'").get() as { count: number };
   const completedCount = db.prepare("SELECT COUNT(*) as count FROM trade_reflections WHERE outcome IN ('profit', 'loss', 'breakeven')").get() as { count: number };
   
-  console.log(`   总记录: ${totalCount.count}`);
-  console.log(`   进行中: ${pendingCount.count}`);
   console.log(`   已完成: ${completedCount.count}`);
   
   if (totalCount.count === 0) {
