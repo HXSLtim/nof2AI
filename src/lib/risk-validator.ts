@@ -77,6 +77,7 @@ export class PreTradeValidator {
    * @param accountTotal 账户总资产
    * @param availableMargin 可用保证金
    * @param proposedNotional 拟开仓的名义价值
+   * @param proposedMargin 拟开仓的保证金（名义价值/杠杆）
    * @returns 验证结果
    */
   static validateTrade(
@@ -84,32 +85,43 @@ export class PreTradeValidator {
     decision: ParsedDecision,
     accountTotal: number,
     availableMargin: number,
-    proposedNotional: number
+    proposedNotional: number,
+    proposedMargin?: number
   ): RiskValidationResult {
     const errors: string[] = [];
     const warnings: string[] = [];
     
-    // 1. 计算当前风险指标
-    const currentTotalExposure = currentPositions.reduce((sum, p) => sum + p.notional, 0);
-    const symbolExposure = currentPositions
+    // 🔧 计算保证金（如果没提供）
+    const actualProposedMargin = proposedMargin || (proposedNotional / (decision.leverage || 1));
+    
+    // 1. 计算当前风险指标（基于保证金，不是名义价值！）
+    const currentTotalMargin = currentPositions.reduce((sum, p) => sum + (p.notional / p.leverage), 0);
+    const symbolMargin = currentPositions
       .filter(p => p.coin === decision.symbol)
-      .reduce((sum, p) => sum + p.notional, 0);
+      .reduce((sum, p) => sum + (p.notional / p.leverage), 0);
     const maxLeverage = Math.max(...currentPositions.map(p => p.leverage), decision.leverage || 1);
     const openPositionsCount = currentPositions.length;
     
-    // 2. 计算新订单后的风险指标
+    // 2. 计算新订单后的风险指标（基于保证金）
     const isClosing = decision.action.includes('CLOSE');
-    const newTotalExposure = isClosing 
-      ? currentTotalExposure - symbolExposure  // 平仓减少敞口
-      : currentTotalExposure + proposedNotional;  // 开仓增加敞口
+    const newTotalMargin = isClosing 
+      ? currentTotalMargin - symbolMargin  // 平仓减少保证金占用
+      : currentTotalMargin + actualProposedMargin;  // 开仓增加保证金占用
     
-    const newSymbolExposure = isClosing 
-      ? 0  // 平仓后该币种敞口为0
-      : symbolExposure + proposedNotional;
+    const newSymbolMargin = isClosing 
+      ? 0  // 平仓后该币种保证金为0
+      : symbolMargin + actualProposedMargin;
     
-    const totalExposurePercent = accountTotal > 0 ? (newTotalExposure / accountTotal) * 100 : 0;
-    const symbolExposurePercent = accountTotal > 0 ? (newSymbolExposure / accountTotal) * 100 : 0;
+    // 保证金占用百分比（而不是名义价值）
+    const totalMarginPercent = accountTotal > 0 ? (newTotalMargin / accountTotal) * 100 : 0;
+    const symbolMarginPercent = accountTotal > 0 ? (newSymbolMargin / accountTotal) * 100 : 0;
     const marginUsagePercent = accountTotal > 0 ? ((accountTotal - availableMargin) / accountTotal) * 100 : 0;
+    
+    // 保留名义价值用于显示
+    const currentTotalExposure = currentPositions.reduce((sum, p) => sum + p.notional, 0);
+    const symbolExposure = currentPositions.filter(p => p.coin === decision.symbol).reduce((sum, p) => sum + p.notional, 0);
+    const newTotalExposure = isClosing ? currentTotalExposure - symbolExposure : currentTotalExposure + proposedNotional;
+    const newSymbolExposure = isClosing ? 0 : symbolExposure + proposedNotional;
     
     // 3. 仅对开仓操作进行风险检查
     if (!isClosing) {
@@ -118,14 +130,14 @@ export class PreTradeValidator {
         errors.push(`可用保证金不足：$${availableMargin.toFixed(2)} < $${RISK_LIMITS.MIN_AVAILABLE_MARGIN}最低要求`);
       }
       
-      // 检查2: 总风险敞口是否超限
-      if (totalExposurePercent > RISK_LIMITS.MAX_TOTAL_EXPOSURE_PERCENT) {
-        errors.push(`总风险敞口超限：${totalExposurePercent.toFixed(1)}% > ${RISK_LIMITS.MAX_TOTAL_EXPOSURE_PERCENT}%限制`);
+      // 检查2: 总保证金占用是否超限
+      if (totalMarginPercent > RISK_LIMITS.MAX_TOTAL_EXPOSURE_PERCENT) {
+        errors.push(`总保证金占用超限：${totalMarginPercent.toFixed(1)}% > ${RISK_LIMITS.MAX_TOTAL_EXPOSURE_PERCENT}%限制`);
       }
       
-      // 检查3: 单币种风险敞口是否超限
-      if (symbolExposurePercent > RISK_LIMITS.MAX_SYMBOL_EXPOSURE_PERCENT) {
-        errors.push(`${decision.symbol}单币种风险超限：${symbolExposurePercent.toFixed(1)}% > ${RISK_LIMITS.MAX_SYMBOL_EXPOSURE_PERCENT}%限制`);
+      // 检查3: 单币种保证金占用是否超限
+      if (symbolMarginPercent > RISK_LIMITS.MAX_SYMBOL_EXPOSURE_PERCENT) {
+        errors.push(`${decision.symbol}单币种保证金超限：${symbolMarginPercent.toFixed(1)}% > ${RISK_LIMITS.MAX_SYMBOL_EXPOSURE_PERCENT}%限制`);
       }
       
       // 检查4: 是否超过最大持仓数
@@ -188,10 +200,10 @@ export class PreTradeValidator {
       errors,
       warnings,
       riskMetrics: {
-        totalExposure: newTotalExposure,
-        totalExposurePercent,
+        totalExposure: newTotalExposure,  // 名义价值（用于显示）
+        totalExposurePercent: totalMarginPercent,  // 保证金占比（用于风险检查）
         symbolExposure: newSymbolExposure,
-        symbolExposurePercent,
+        symbolExposurePercent: symbolMarginPercent,
         maxLeverage,
         openPositionsCount: isClosing ? openPositionsCount - 1 : openPositionsCount + 1,
         availableMargin,

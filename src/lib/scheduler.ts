@@ -154,6 +154,12 @@ export function startAIDecisionScheduler() {
       invocationCount++;
       console.log(`[ai-decision-scheduler] 🔄 第 ${invocationCount} 次调用，单币种模式`);
 
+      // 🔐 刷新资金调度器（每次AI决策开始时）
+      const { fundScheduler } = await import('./fund-scheduler');
+      await fundScheduler.refresh();
+      console.log('[ai-decision-scheduler] ✅ 资金调度器已刷新');
+      fundScheduler.printStatus();
+
       // 动态导入避免循环依赖
       const { composePrompt, parseDecisionFromText } = await import('./ai-trading-prompt');
       const { insertDecision, getEnabledCoins } = await import('./db');
@@ -223,7 +229,15 @@ export function startAIDecisionScheduler() {
             if (decision.action !== 'HOLD') {
               // 交易决策 - 立即执行
               const title = `[自动] ${decision.action} ${decision.symbol} (${decision.confidence}%)`;
-              const desc = `${decision.reasoning}\n\n决策详情：\n- 操作: ${decision.action}\n- 币种: ${decision.symbol}\n- 杠杆: ${decision.leverage || 5}x`;
+              
+              // 格式化仓位大小
+              const positionSizeDisplay = decision.positionSizePercent 
+                ? `${decision.positionSizePercent}% 可用资金` 
+                : decision.sizeUSDT 
+                  ? `$${decision.sizeUSDT} USDT` 
+                  : '系统自动';
+              
+              const desc = `${decision.reasoning}\n\n决策详情：\n- 操作: ${decision.action}\n- 币种: ${decision.symbol}\n- 杠杆: ${decision.leverage || 5}x\n- 仓位大小: ${positionSizeDisplay}\n- 止盈: ${decision.takeProfit || 'N/A'}\n- 止损: ${decision.stopLoss || 'N/A'}`;
               
               if (autoExecute) {
                 try {

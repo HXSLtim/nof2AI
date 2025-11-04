@@ -20,33 +20,17 @@ export const SUPPORTED_INSTRUMENTS = SUPPORTED_COINS.map(coin => `${coin}-USDT-S
 export type SupportedCoin = typeof SUPPORTED_COINS[number];
 
 /**
- * OKX合约乘数映射
- * ccxt的amount需要乘以此倍数才是实际张数
- * 
- * 规则：
- * - ccxt使用币的数量（如0.01 BTC, 0.1 ETH）
- * - OKX使用合约张数
- * - 乘数 = 1 / CONTRACT_VALUES = 1 / (1张合约的币数量)
- * 
- * ⚠️ 注意：此定义用于下单时的amount转换
- * 对于仓位数据，请使用CONTRACT_VALUES
- */
-export const CONTRACT_MULTIPLIERS: Record<string, number> = {
-  'BTC': 100,    // 1张 = 0.01 BTC → 乘数 = 1/0.01 = 100
-  'ETH': 10,     // 1张 = 0.1 ETH → 乘数 = 1/0.1 = 10
-  'SOL': 1,      // 1张 = 1 SOL → 乘数 = 1/1 = 1
-  'BNB': 100,    // 1张 = 0.01 BNB → 乘数 = 1/0.01 = 100
-  'XRP': 1,      // 1张 = 1 XRP → 乘数 = 1/1 = 1
-  'DOGE': 0.001  // 1张 = 1000 DOGE → 乘数 = 1/1000 = 0.001
-} as const;
-
-/**
  * OKX合约面值（每张合约包含多少币）
- * 用于将OKX返回的pos字段（张数）转换为实际币数量
  * 
- * 🔧 重要：OKX API返回的pos字段 = 合约张数
- * 币数量 = pos × CONTRACT_VALUES[coin]
- * 名义价值 = 币数量 × 价格
+ * 🔧 核心定义：统一用于下单和显示
+ * 
+ * 下单逻辑：
+ * - 想下X张合约 → 需要的币数量 = X × CONTRACT_VALUES[coin]
+ * - ccxt amount = 币数量
+ * 
+ * 显示逻辑：
+ * - OKX返回pos张数 → 币数量 = pos × CONTRACT_VALUES[coin]
+ * - 名义价值 = 币数量 × 价格
  * 
  * 基于实际验证数据确定：
  * - BTC: 3张 → 0.03 BTC → $3,224 ✅
@@ -61,7 +45,7 @@ export const CONTRACT_VALUES: Record<string, number> = {
   'ETH': 0.1,     // 1张 = 0.1 ETH
   'SOL': 1,       // 1张 = 1 SOL
   'BNB': 0.01,    // 1张 = 0.01 BNB
-  'XRP': 1,       // 1张 = 1 XRP
+  'XRP': 100,     // 1张 = 100 XRP ✅ 修复！
   'DOGE': 1000    // 1张 = 1000 DOGE
 } as const;
 
@@ -126,14 +110,113 @@ export const API_LIMITS = {
 } as const;
 
 /**
- * 不同币种的最大单笔订单金额限制（USDT）
+ * 不同币种的最大单笔订单金额限制（USDT保证金）
+ * 
+ * ⚠️ 这些是保守的安全限制，避免触发OKX的51202错误
+ * OKX对市价单有最大金额限制，具体值取决于市场流动性
  */
 export const MAX_ORDER_LIMITS: Record<string, number> = {
-  'BTC': 2000,
-  'ETH': 1500,
-  'SOL': 800,
-  'BNB': 800,
-  'XRP': 500,
-  'DOGE': 500,
+  'BTC': 1000,   // 降低到$1000避免超限
+  'ETH': 800,    // 降低到$800
+  'SOL': 500,    // 降低到$500
+  'BNB': 500,    // 降低到$500
+  'XRP': 300,    // 降低到$300（XRP流动性较低）
+  'DOGE': 300,   // 降低到$300（DOGE流动性较低）
 } as const;
+
+/**
+ * 每个币种开1张合约的最小资金要求（5x杠杆，含手续费和缓冲）
+ * 
+ * 计算公式：(价格 / 杠杆) × 1.15
+ * 
+ * ⚠️ 注意：这些值会随市场价格波动，仅供参考
+ * 实际交易时会动态计算
+ * 
+ * 用途：
+ * 1. AI决策前过滤资金不足的币种
+ * 2. 给用户明确的资金要求提示
+ * 3. 优化资金分配策略
+ */
+export const MIN_FUNDS_PER_COIN_5X: Record<string, number> = {
+  'BTC': 24000,   // BTC ~$104k → 1张约需$24k
+  'ETH': 850,     // ETH ~$3.7k → 1张约需$850
+  'SOL': 45,      // SOL ~$180 → 1张约需$45
+  'BNB': 150,     // BNB ~$620 → 1张约需$150
+  'XRP': 1,       // XRP ~$0.65 → 1张约需$1
+  'DOGE': 30,     // DOGE 1张=1000个 ~$120 → 需$30
+} as const;
+
+/**
+ * 根据实际价格动态计算开1张合约需要的最小资金
+ * 
+ * @param symbol 币种符号
+ * @param currentPrice 当前价格
+ * @param leverage 杠杆倍数（默认5x）
+ * @returns 最小所需资金（USDT）
+ */
+export function calculateMinFundsForOneContract(
+  symbol: string,
+  currentPrice: number,
+  leverage: number = 5
+): number {
+  // 1张合约的名义价值
+  const oneContractNotional = 1 * currentPrice;
+  
+  // 所需保证金
+  const margin = oneContractNotional / leverage;
+  
+  // 手续费（开仓+平仓）
+  const fees = oneContractNotional * (TRADING_FEES.TAKER + TRADING_FEES.CLOSE);
+  
+  // 安全缓冲（15%）
+  const buffer = (margin + fees) * 0.15;
+  
+  // 总需求
+  const total = margin + fees + buffer;
+  
+  return total;
+}
+
+/**
+ * 根据可用资金过滤可交易的币种
+ * 
+ * @param coins 候选币种列表
+ * @param availableCash 可用资金
+ * @param prices 当前价格字典
+ * @param leverage 杠杆倍数
+ * @returns 资金充足的币种列表
+ */
+export function filterTradableCoins(
+  coins: string[],
+  availableCash: number,
+  prices: Record<string, number>,
+  leverage: number = 5
+): { tradable: string[]; skipped: { coin: string; required: number; shortage: number }[] } {
+  const tradable: string[] = [];
+  const skipped: { coin: string; required: number; shortage: number }[] = [];
+  
+  for (const coin of coins) {
+    const priceKey = `${coin}-USDT-SWAP`;
+    const price = prices[priceKey];
+    
+    if (!price) {
+      console.warn(`[filterTradableCoins] ⚠️ ${coin} 价格未知，跳过`);
+      continue;
+    }
+    
+    const minRequired = calculateMinFundsForOneContract(coin, price, leverage);
+    
+    if (availableCash >= minRequired) {
+      tradable.push(coin);
+    } else {
+      skipped.push({
+        coin,
+        required: minRequired,
+        shortage: minRequired - availableCash
+      });
+    }
+  }
+  
+  return { tradable, skipped };
+}
 

@@ -26,6 +26,28 @@ interface CachedMarketData {
 let cachedData: CachedMarketData | null = null;
 
 /**
+ * 缓存统计类型
+ */
+interface CacheStats {
+  hits: number;
+  misses: number;
+  refreshes: number;
+  lastRefresh: number;
+  avgLoadTime: number;
+}
+
+/**
+ * 缓存统计信息
+ */
+let cacheStats: CacheStats = {
+  hits: 0,
+  misses: 0,
+  refreshes: 0,
+  lastRefresh: 0,
+  avgLoadTime: 0
+};
+
+/**
  * 获取市场数据（优先使用缓存）
  */
 export async function getMarketData(instIds: string[], forceRefresh = false): Promise<CachedMarketData> {

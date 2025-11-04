@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Card, Space, Typography } from 'antd';
+import { useAccount, usePrices } from '@/contexts/DataContext';
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
 /**
  * 账户总金额行结构
@@ -13,21 +14,16 @@ const { Text, Title } = Typography;
 type EquityRow = { ts: number; total: number };
 
 /**
- * 左右两侧空白比例（宽度的各 10%）
- * @remarks 让曲线居中显示，两侧留有对称空白
+ * 左右两侧空白比例
+ * @remarks 左侧无空白，右侧保留10%空白，曲线从最左边开始
  */
-const LEFT_PAD_RATIO = 0.10;
+const LEFT_PAD_RATIO = 0.0;
 const RIGHT_PAD_RATIO = 0.10;
 /**
  * 垂直方向内边距（顶部/底部），增加空间以便自动缩放
  * @remarks 增大内边距，确保曲线不会触及边界
  */
 const V_PAD = 30;
-/**
- * 垂直方向头尾留白比例（顶部和底部各预留的空间）
- * @remarks 在数据范围的基础上，顶部和底部各留出30%的空间，确保曲线不会占满画布
- */
-const V_HEAD_TAIL_MARGIN = 0.30; // 头尾各预留 30% 空间（增加留白）
 
 /**
  * 归一化为 SVG 折线点串
@@ -145,8 +141,8 @@ function computePoints(
     console.log(`  ─────────────────────────────────────`);
     console.log(`  可视范围: ${visualMin.toFixed(2)} → ${visualMax.toFixed(2)}`);
     console.log(`  可视跨度: ${visualSpan.toFixed(2)} USDT`);
-    console.log(`  基准线位置: ${baselinePosition}% ${baselinePosition >= 30 && baselinePosition <= 70 ? '✅' : '❌ 不在理想范围(30-70%)'}`);
-    console.log(`  数据占画布: ${dataOccupancy}% ${dataOccupancy >= 40 && dataOccupancy <= 70 ? '✅' : dataOccupancy < 40 ? '⚠️ 太空(建议40-70%)' : '⚠️ 太满'}`);
+    console.log(`  基准线位置: ${baselinePosition}% ${Number(baselinePosition) >= 30 && Number(baselinePosition) <= 70 ? '✅' : '❌ 不在理想范围(30-70%)'}`);
+    console.log(`  数据占画布: ${dataOccupancy}% ${Number(dataOccupancy) >= 40 && Number(dataOccupancy) <= 70 ? '✅' : Number(dataOccupancy) < 40 ? '⚠️ 太空(建议40-70%)' : '⚠️ 太满'}`);
     console.log(`  基准线可见: ${baseline >= visualMin && baseline <= visualMax ? '✅ 是' : '❌ 否'}`);
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   }
@@ -225,7 +221,6 @@ function splitByBaseline(
 
     const prev = pts[i - 1];
     const vPrev = prev.row.total;
-    const yPrev = prev.y;
     const isAbovePrev = vPrev - base > EPS;
     const isBelowPrev = base - vPrev > EPS;
 
@@ -286,13 +281,19 @@ function formatTs(ts: number): string {
 /**
  * 账户总金额折线卡片
  * @description 从 `/api/equity` 拉取账户总金额时间序列，并以简单 SVG 折线展示
- * @remarks 每 3 秒自动刷新一次，与采集调度器默认间隔一致
+ * @remarks 
+ * - 曲线历史数据：每1分钟更新一次（减少数据库负载）
+ * - 当前总金额和币种价格：每3秒更新一次（与仓位同步，实时感更强）
  */
 export default function EquityChart() {
+  // 使用DataContext的实时数据
+  const { account } = useAccount();
+  const { prices } = usePrices();
+  
   const [rows, setRows] = useState<EquityRow[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
-  /** 主流币价格（简版） */
-  const [prices, setPrices] = useState<Record<string, number>>({});
+  /** 当前账户总金额（从DataContext获取，实时更新） */
+  const currentTotal = Number(account.totalEq || 0);
   /** Y轴自动缩放模式 */
   const [autoScale, setAutoScale] = useState<'smart' | 'full' | 'tight'>("smart");
   /**
@@ -391,21 +392,16 @@ export default function EquityChart() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const last = rows.length ? rows[rows.length - 1].total : 0;
+  // 使用实时总金额（如果有的话），否则使用曲线最后一个点
+  const last = currentTotal > 0 ? currentTotal : (rows.length ? rows[rows.length - 1].total : 0);
   const first = rows.length ? rows[0].total : 0;
   const chgPct = first ? ((last - first) / first) * 100 : 0;
 
   const width = Math.max(240, Math.floor(boxWidth));
   const height = Math.max(160, Math.floor(boxHeight));
   
-  // 调试：输出实际容器尺寸
-  if (typeof window !== 'undefined') {
-    console.log(`[EquityChart] 📐 容器尺寸: 宽=${width}px, 高=${height}px`);
-    console.log(`[EquityChart] 📐 boxRef实际尺寸: 宽=${boxRef.current?.clientWidth || 0}px, 高=${boxRef.current?.clientHeight || 0}px`);
-  }
-  
+    
   const computed = useMemo(() => computePoints(rows, width, height, autoScale), [rows, width, height, autoScale]);
-  const points = useMemo(() => computed.points.map((p) => `${p.x},${p.y}`).join(' '), [computed.points]);
 
   /**
    * 将鼠标屏幕坐标转换为 SVG 坐标
@@ -414,7 +410,7 @@ export default function EquityChart() {
    * @returns 在当前 viewBox 下的 SVG 坐标
    */
   function getSvgMouseCoords(svg: SVGSVGElement, e: React.MouseEvent<SVGSVGElement>): { x: number; y: number } {
-    const pt = svg.createSVGPoint ? svg.createSVGPoint() : ({ x: 0, y: 0, matrixTransform: (m: any) => ({ x: 0, y: 0 }) } as any);
+    const pt = svg.createSVGPoint ? svg.createSVGPoint() : ({ x: 0, y: 0, matrixTransform: () => ({ x: 0, y: 0 }) } as any);
     (pt as any).x = e.clientX;
     (pt as any).y = e.clientY;
     const ctm = svg.getScreenCTM?.();
@@ -434,7 +430,7 @@ export default function EquityChart() {
    */
   function handleMouseMove(e: React.MouseEvent<SVGSVGElement>) {
     if (!svgRef.current || !computed.points.length) return;
-    const { x: mxSvg, y: mySvg } = getSvgMouseCoords(svgRef.current, e);
+    const { x: mxSvg } = getSvgMouseCoords(svgRef.current, e);
     // 有效区域：从 leftPad 到 width - rightPad
     const effectiveStartX = computed.leftPad;
     const effectiveEndX = width - computed.rightPad;
@@ -456,22 +452,54 @@ export default function EquityChart() {
     setHover(null);
   }
 
-  /** 拉取主流币价格（每 1 分钟，与总资产同步） */
+  /**
+   * 🔥 使用DataContext的实时数据更新曲线
+   * @remarks 
+   * - 账户总金额：从DataContext自动获取（WebSocket或3秒轮询）
+   * - 币种价格：从DataContext自动获取（WebSocket或3秒轮询）
+   * - 无需独立的API调用，数据由DataService统一管理
+   * - 实时性：WebSocket推送 < 100ms，比之前的3秒轮询快30倍
+   */
   useEffect(() => {
-    let timer: any = null;
-    const fetchPrices = async () => {
-      try {
-        const res = await fetch('/api/prices', { cache: 'no-store' });
-        const json = await res.json();
-        if (res.ok && json && typeof json === 'object') {
-          setPrices(json as Record<string, number>);
+    if (currentTotal > 0) {
+      const timestamp = Date.now();
+      console.log(`[EquityChart] 🔄 总金额更新: $${currentTotal.toFixed(2)} (从DataContext)`);
+      
+      // 实时更新曲线：更新或添加最新的点
+      setRows(prevRows => {
+        if (prevRows.length === 0) {
+          // 如果没有历史数据，创建第一个点
+          return [{ ts: timestamp, total: currentTotal }];
         }
-      } catch {}
-    };
-    fetchPrices();
-    timer = setInterval(fetchPrices, 60000); // ✅ 改为1分钟
-    return () => { if (timer) clearInterval(timer); };
-  }, []);
+        
+        const lastRow = prevRows[prevRows.length - 1];
+        const timeDiff = timestamp - lastRow.ts;
+        
+        // 如果最后一个点是30秒内的，更新它
+        if (timeDiff < 30000) {
+          const newRows = [...prevRows];
+          newRows[newRows.length - 1] = { ts: timestamp, total: currentTotal };
+          return newRows;
+        }
+        
+        // 如果超过30秒，添加新点
+        return [...prevRows, { ts: timestamp, total: currentTotal }];
+      });
+    }
+  }, [currentTotal]);
+
+  // 🔍 监听prices变化（从DataContext）
+  useEffect(() => {
+    if (Object.keys(prices).length > 0) {
+      const priceCount = Object.keys(prices).length;
+      const priceDetails = Object.entries(prices).map(([id, price]) => {
+        const coin = id.split('-')[0];
+        return `${coin}=$${Number(price).toFixed(2)}`;
+      }).join(', ');
+      
+      console.log(`[EquityChart] 📊 价格更新 (${priceCount}个，从DataContext): ${priceDetails}`);
+    }
+  }, [prices]);
 
   return (
     <Card
@@ -547,20 +575,39 @@ export default function EquityChart() {
         </div>
       }
       extra={
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <Text style={{ color: chgPct >= 0 ? '#00e676' : '#ef4444' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', maxWidth: '100%' }}>
+          <Text style={{ color: chgPct >= 0 ? '#00e676' : '#ef4444', whiteSpace: 'nowrap' }}>
             {last.toFixed(2)} USDT（{chgPct >= 0 ? '+' : ''}{chgPct.toFixed(2)}%）
           </Text>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#a1a9b7' }}>
+          <div style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: 8, 
+            color: '#a1a9b7',
+            flexWrap: 'wrap',
+            fontSize: 12,
+            flex: 1,
+            justifyContent: 'flex-end'
+          }}>
             {Object.entries(prices).length === 0 ? (
-              <Text style={{ color: '#a1a9b7' }}>加载主流币价格...</Text>
+              <Text style={{ color: '#a1a9b7', fontSize: 12 }}>加载价格...</Text>
             ) : (
               Object.entries(prices).map(([instId, price]) => {
                 const coin = instId.split('-')[0];
                 const val = Number(price);
                 return (
-                  <span key={instId} style={{ color: '#a1a9b7', whiteSpace: 'nowrap' }}>
-                    {coin} {Number.isFinite(val) ? val.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '-'}
+                  <span 
+                    key={instId} 
+                    style={{ 
+                      color: '#a1a9b7', 
+                      whiteSpace: 'nowrap',
+                      fontSize: 12,
+                      padding: '2px 6px',
+                      background: '#1a1d26',
+                      borderRadius: 4
+                    }}
+                  >
+                    {coin} ${Number.isFinite(val) ? val.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '-'}
                   </span>
                 );
               })
@@ -604,34 +651,20 @@ export default function EquityChart() {
               const effectiveStartX = computed.leftPad;
               const effectiveEndX = width - computed.rightPad;
               
-              // 调试：输出基准线位置
-              console.log(`[EquityChart] 🔍 基准线Y坐标: ${baselineY.toFixed(2)}px (画布高度: ${height}px)`);
-              console.log(`[EquityChart] 🔍 基准线是否在可见区域: ${baselineY >= 0 && baselineY <= height ? '✅' : '❌ 超出画布'}`);
-              
+                
               return (
                 <g>
-                  {/* 基准线：初始金额 - 增强可见性 */}
-                  <line 
-                    x1={effectiveStartX} 
-                    y1={baselineY} 
-                    x2={effectiveEndX} 
-                    y2={baselineY} 
-                    stroke="#fbbf24" 
-                    strokeWidth={2}
-                    strokeDasharray="8 4" 
-                    opacity={1} 
+                  {/* 基准线：初始金额 - 简洁灰色风格 */}
+                  <line
+                    x1={effectiveStartX}
+                    y1={baselineY}
+                    x2={effectiveEndX}
+                    y2={baselineY}
+                    stroke="#6b7280"
+                    strokeWidth={1.5}
+                    strokeDasharray="8 4"
+                    opacity={0.6}
                   />
-                  {/* 基准线标签 */}
-                  <text
-                    x={effectiveStartX - 5}
-                    y={baselineY}
-                    fill="#fbbf24"
-                    fontSize={11}
-                    textAnchor="end"
-                    dominantBaseline="middle"
-                  >
-                    初始: ${base.toFixed(0)}
-                  </text>
                   {/* 绿色段：高于初始金额 */}
                   {above.map((seg, i) => (
                     <polyline key={`a-${i}`} points={seg.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#00e676" strokeWidth={2} vectorEffect="non-scaling-stroke" />
@@ -684,26 +717,10 @@ export default function EquityChart() {
             </div>
           )}
           <div style={{ position: 'absolute', bottom: 8, left: 8 }}>
-            <Text style={{ color: '#6b7280', fontSize: 12 }}>最近 72 小时 · 每 1 分钟刷新</Text>
+            <Text style={{ color: '#6b7280', fontSize: 12 }}>
+              最近 72 小时 · 🔴 实时数据（每3秒更新）
+            </Text>
           </div>
-          
-          {/* 调试信息：显示Y轴刻度 */}
-          {computed.visualMin !== undefined && (
-            <div style={{ 
-              position: 'absolute', 
-              top: 8, 
-              right: 8,
-              background: 'rgba(0,0,0,0.6)',
-              padding: '6px 10px',
-              borderRadius: 4,
-              fontSize: 11,
-              color: '#94a3b8'
-            }}>
-              <div>最高: ${computed.visualMax.toFixed(0)}</div>
-              <div style={{ color: '#fbbf24', fontWeight: 'bold' }}>初始: ${computed.baselineValue.toFixed(0)}</div>
-              <div>最低: ${computed.visualMin.toFixed(0)}</div>
-            </div>
-          )}
         </div>
       )}
     </Card>

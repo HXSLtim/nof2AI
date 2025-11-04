@@ -73,20 +73,31 @@ export function calculateMarginRequirement(
   const notionalValue = sizeUSDT * leverage;
   
   // 2. 计算合约张数 = 名义价值 / 价格
+  // 根据OKX官方公式：张数 = (保证金 × 杠杆) / 价格
   const rawContractSize = notionalValue / entryPrice;
   
-  // 3. OKX支持小数张数！保留8位小数精度（crypto标准）
-  const contractSize = Math.round(rawContractSize * 100000000) / 100000000;
+  // 3. ⚠️ OKX USDT永续合约 lotSz = 0.01，合约张数必须是0.01的整数倍
+  // 向下取整到0.01的倍数，最小0.01张
+  const contractSize = Math.max(0.01, Math.floor(rawContractSize * 100) / 100);
   
-  // 4. 所需保证金就是输入的sizeUSDT
-  const requiredMargin = sizeUSDT;
+  console.log(`[margin-calculator] 💰 保证金: $${sizeUSDT.toFixed(2)}, 杠杆: ${leverage}x`);
+  console.log(`[margin-calculator] 📊 名义价值: $${notionalValue.toFixed(2)}`);
+  console.log(`[margin-calculator] 📐 理论张数: ${rawContractSize.toFixed(4)}张`);
+  console.log(`[margin-calculator] ✅ 实际张数: ${contractSize}张 (0.01倍数)`);
   
-  // 5. 计算手续费
-  // 开仓手续费 = 名义价值 × 手续费率
-  const openFee = notionalValue * TRADING_FEES.TAKER;
+  // 4. 重新计算实际名义价值（基于整数张数）
+  const actualNotionalValue = contractSize * entryPrice;
+  
+  // 5. 重新计算实际所需保证金（基于整数张数）
+  // 根据OKX公式：保证金 = (张数 × 价格) / 杠杆
+  const requiredMargin = actualNotionalValue / leverage;
+  
+  // 6. 计算手续费（基于实际名义价值）
+  // 开仓手续费 = 实际名义价值 × 手续费率
+  const openFee = actualNotionalValue * TRADING_FEES.TAKER;
   
   // 平仓手续费预留（即使是市价单，也按最坏情况计算）
-  const closeFee = notionalValue * TRADING_FEES.CLOSE;
+  const closeFee = actualNotionalValue * TRADING_FEES.CLOSE;
   
   // 总手续费
   const totalFees = openFee + closeFee;
@@ -100,14 +111,14 @@ export function calculateMarginRequirement(
   // 8. 最终建议金额
   const recommendedAmount = totalRequired + safetyBuffer;
   
-  // 9. 检查是否满足最小合约张数（允许任意小数）
-  // OKX支持极小张数（如0.0001张），只要大于0即可
-  const minSize = 0.0001; // 最小0.0001张（几乎任何金额都可以）
+  // 9. 检查是否满足最小合约张数（0.01张）
+  // ⚠️ OKX合约张数必须是0.01的倍数，最小0.01张
+  const minSize = 0.01; // 最小0.01张
   const meetsMinimum = contractSize >= minSize;
   
   return {
     contractSize,
-    notionalValue,
+    notionalValue: actualNotionalValue,  // 使用实际名义价值（基于整数张数）
     requiredMargin,
     openFee,
     closeFee,
@@ -158,7 +169,7 @@ export function validateSufficientMargin(
   if (!calculation.meetsMinimum) {
     return {
       isValid: false,
-      message: `合约张数不足：计算得到 ${calculation.contractSize.toFixed(8)} 张，不满足最小要求（至少0.0001张）。请增加投入金额或提高杠杆倍数。`,
+      message: `合约张数不足：计算得到 ${calculation.contractSize} 张，不满足最小要求（至少0.01张）。请增加投入金额或提高杠杆倍数。`,
       details: {
         available: availableUSDT,
         required,
@@ -215,12 +226,12 @@ export function adjustOrderToAvailableFunds(
     const mid = (low + high) / 2;
     calculation = calculateMarginRequirement(symbol, entryPrice, mid, leverage);
     
-    if (availableUSDT >= calculation.recommendedAmount && calculation.contractSize >= 0.0001) {
-      // 找到可行解，尝试找更大的
+    if (availableUSDT >= calculation.recommendedAmount && calculation.contractSize >= 0.01) {
+      // 找到可行解（至少0.01张），尝试找更大的
       bestCalculation = calculation;
       low = mid;
     } else {
-      // 金额太大，减小
+      // 金额太大或不足0.01张，减小
       high = mid;
     }
     
@@ -230,12 +241,12 @@ export function adjustOrderToAvailableFunds(
     }
   }
   
-  if (bestCalculation && bestCalculation.contractSize >= 0.0001) {
+  if (bestCalculation && bestCalculation.contractSize >= 0.01) {
     console.log(`[adjustOrderToAvailableFunds] 调整成功: ${requestedUSDT} → ${bestCalculation.actualUSDT.toFixed(2)} USDT`);
     return bestCalculation;
   }
   
-  console.log(`[adjustOrderToAvailableFunds] 调整失败: 即使使用全部可用资金也无法满足最小合约张数要求（0.0001张）`);
+  console.log(`[adjustOrderToAvailableFunds] 调整失败: 即使使用全部可用资金也无法满足最小合约张数要求（0.01张）`);
   return null;
 }
 

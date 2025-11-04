@@ -1,21 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npx tsc:*)",
-      "Bash(npm run build:*)",
-      "Bash(Get-ChildItem -Path \"c:\\Users\\a2778\\Desktop\\Quant\" -Recurse)",
-      "Bash(Where-Object { -not $_SIsContainer })",
-      "Bash(Format-Table Name, Length, LastWriteTime -AutoSize)",
-      "Bash(Get-ChildItem -Path \"c:\\Users\\a2778\\Desktop\\code\\Quant\" -Recurse)",
-      "Bash(Sort-Object:*)",
-      "Bash(Select-Object Name, Length, LastWriteTime)",
-      "Bash(Format-Table -AutoSize)",
-      "Bash(tree:*)",
+      "Bash(Select-Object:*)",
+      "Bash(powershell:*)",
+      "Bash(Get-Content \"c:\\Users\\a2778\\Desktop\\code\\Quant\\src\\lib\\okx.ts\")",
       "Bash(npm run dev:*)",
-      "Bash(curl:*)",
-      "Bash(ConvertFrom-Json)",
-      "Bash(npx tsx:*)",
-      "Bash(sqlite3:*)"
+      "Bash(taskkill:*)"
     ],
     "deny": [],
     "ask": []

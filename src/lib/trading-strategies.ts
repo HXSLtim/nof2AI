@@ -529,7 +529,7 @@ export class AdaptiveStrategySelector {
     // 调整权重
     const adjust = (basWeight: number, strategyKey: string): number => {
       const score = performanceScores[strategyKey] || 1.0;
-      return baseWeight * score;
+      return basWeight * score;
     };
     
     const adjusted = {

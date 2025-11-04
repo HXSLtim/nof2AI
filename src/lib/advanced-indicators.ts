@@ -191,9 +191,9 @@ export function volumeProfile(
 /**
  * 找出POC（Point of Control）- 成交量最大的价格区间
  */
-export function findPOC(volumeProfile: ReturnType<typeof volumeProfile>): number {
-  if (volumeProfile.length === 0) return 0;
-  return volumeProfile[0].priceLevel;
+export function findPOC(profile: Array<{ priceLevel: number; volume: number }>): number {
+  if (profile.length === 0) return 0;
+  return profile[0].priceLevel;
 }
 
 /**

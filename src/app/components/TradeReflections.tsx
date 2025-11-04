@@ -160,10 +160,10 @@ export default function TradeReflections() {
             <div className={styles.statCard}>
               <div className={styles.statLabel}>胜率</div>
               <div className={styles.statValue} style={{ 
-                color: summary.stats.winRate >= 60 ? '#22c55e' : 
-                       summary.stats.winRate >= 50 ? '#f59e0b' : '#ef4444' 
+                color: (summary.stats.winRate || 0) >= 60 ? '#22c55e' : 
+                       (summary.stats.winRate || 0) >= 50 ? '#f59e0b' : '#ef4444' 
               }}>
-                {summary.stats.winRate.toFixed(1)}%
+                {(summary.stats.winRate || 0).toFixed(1)}%
               </div>
               <div className={styles.statSubtext}>
                 {summary.stats.winningTrades}胜 / {summary.stats.losingTrades}负
@@ -173,25 +173,25 @@ export default function TradeReflections() {
             <div className={styles.statCard}>
               <div className={styles.statLabel}>总盈亏</div>
               <div className={styles.statValue} style={{ 
-                color: summary.stats.totalPnl >= 0 ? '#22c55e' : '#ef4444' 
+                color: (summary.stats.totalPnl || 0) >= 0 ? '#22c55e' : '#ef4444' 
               }}>
-                ${summary.stats.totalPnl.toFixed(2)}
+                ${(summary.stats.totalPnl || 0).toFixed(2)}
               </div>
             </div>
             
             <div className={styles.statCard}>
               <div className={styles.statLabel}>平均盈亏</div>
               <div className={styles.statValue} style={{ 
-                color: summary.stats.avgPnl >= 0 ? '#22c55e' : '#ef4444' 
+                color: (summary.stats.avgPnl || 0) >= 0 ? '#22c55e' : '#ef4444' 
               }}>
-                ${summary.stats.avgPnl.toFixed(2)}
+                ${(summary.stats.avgPnl || 0).toFixed(2)}
               </div>
             </div>
             
             <div className={styles.statCard}>
               <div className={styles.statLabel}>平均持仓</div>
               <div className={styles.statValue}>
-                {formatTime(Math.round(summary.stats.avgHoldingTime))}
+                {formatTime(Math.round(summary.stats.avgHoldingTime || 0))}
               </div>
             </div>
           </div>
@@ -264,7 +264,7 @@ export default function TradeReflections() {
                   </div>
                 </div>
 
-                {reflection.pnl_amount !== undefined && (
+                {reflection.pnl_amount !== undefined && reflection.pnl_amount !== null && (
                   <div className={styles.pnlInfo}>
                     <span style={{ 
                       color: reflection.pnl_amount >= 0 ? '#22c55e' : '#ef4444',
@@ -272,7 +272,7 @@ export default function TradeReflections() {
                     }}>
                       ${reflection.pnl_amount.toFixed(2)}
                     </span>
-                    {reflection.pnl_percentage !== undefined && (
+                    {reflection.pnl_percentage !== undefined && reflection.pnl_percentage !== null && (
                       <span style={{ 
                         color: reflection.pnl_percentage >= 0 ? '#22c55e' : '#ef4444',
                         marginLeft: '8px'
@@ -280,7 +280,7 @@ export default function TradeReflections() {
                         ({reflection.pnl_percentage > 0 ? '+' : ''}{reflection.pnl_percentage.toFixed(2)}%)
                       </span>
                     )}
-                    {reflection.holding_time_minutes !== undefined && (
+                    {reflection.holding_time_minutes !== undefined && reflection.holding_time_minutes !== null && (
                       <span className={styles.holdingTime}>
                         持仓 {formatTime(reflection.holding_time_minutes)}
                       </span>

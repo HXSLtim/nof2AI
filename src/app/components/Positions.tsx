@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Grid, Modal, Button, Popconfirm, Input, Space, App } from 'antd';
+import { usePositions, usePrices } from '@/contexts/DataContext';
 
 interface Position {
   symbol: string;
@@ -53,6 +54,11 @@ function calculateNetPnl(unrealizedPnl: number, notional: number): number {
  */
 export default function Positions() {
   const { message } = App.useApp();
+  
+  // 使用新的数据服务Hook
+  const { positions: rawPositions, loading: positionsLoading, error: positionsError, refresh: refreshPositions } = usePositions();
+  const { prices } = usePrices();
+  
   const [list, setList] = useState<Position[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -69,51 +75,39 @@ export default function Positions() {
   const cellPad = compact ? 4 : 4;
   const [planFor, setPlanFor] = useState<Position | null>(null);
 
-  const fetchData = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/positions');
-      const json = await res.json();
-      if (json.success) {
-        // 字段映射：接口返回 symbol 为 'BTC-USDT-SWAP'
-        const mapped: Position[] = json.data.map((p: any) => {
-          const raw = String(p.symbol || '');
-          const clean = raw.replace('-SWAP', ''); // BTC-USDT-SWAP → BTC-USDT
-          const coin = clean.split('-')[0] || clean; // BTC-USDT → BTC
-          return {
-            symbol: clean,
-            coin,
-            side: p.side!,
-            contracts: Number(p.contracts || 0),
-            notional: Number(p.notional || 0),
-            unrealizedPnl: Number(p.unrealizedPnl || 0),
-            entryPrice: Number(p.entryPrice || 0),
-            markPrice: Number(p.markPrice || 0),
-            leverage: Number(p.leverage || 0),
-          };
-        });
-        setList(mapped);
-      } else {
-        const errorMsg = json.error || '获取仓位失败';
-        console.error('[Positions]', errorMsg, json.details);
-        setError(errorMsg);
-        setList([]);
-      }
-    } catch (err) {
-      console.error('[Positions] Fetch error:', err);
-      setError('网络请求失败，请稍后重试');
-      setList([]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // 处理仓位数据变化
   useEffect(() => {
-    fetchData();
-    const id = setInterval(fetchData, 3000); // 3 秒刷新
-    return () => clearInterval(id);
-  }, []);
+    setLoading(positionsLoading);
+    
+    if (positionsError) {
+      setError(positionsError.message || '获取仓位失败');
+      return;
+    }
+    
+    if (rawPositions && Array.isArray(rawPositions)) {
+      // 字段映射：接口返回 symbol 为 'BTC-USDT-SWAP'
+      const mapped: Position[] = rawPositions.map((p: any) => {
+        const raw = String(p.symbol || '');
+        const clean = raw.replace('-SWAP', ''); // BTC-USDT-SWAP → BTC-USDT
+        const coin = clean.split('-')[0] || clean; // BTC-USDT → BTC
+        return {
+          symbol: clean,
+          coin,
+          side: p.side!,
+          contracts: Number(p.contracts || 0),
+          notional: Number(p.notional || 0),
+          unrealizedPnl: Number(p.unrealizedPnl || 0),
+          entryPrice: Number(p.entryPrice || 0),
+          markPrice: Number(p.markPrice || 0),
+          leverage: Number(p.leverage || 0),
+        };
+      });
+      setList(mapped);
+      setError(null);
+    } else {
+      setList([]);
+    }
+  }, [rawPositions, positionsLoading, positionsError]);
 
   /**
    * 手动平仓单个仓位
@@ -152,7 +146,7 @@ export default function Positions() {
           duration: 3,
         });
         // 立即刷新仓位数据
-        await fetchData();
+        await refreshPositions();
       } else {
         throw new Error(result.error || '平仓失败');
       }
@@ -223,7 +217,7 @@ export default function Positions() {
         });
         setLimitCloseModal(null);
         setLimitPrice('');
-        await fetchData();
+        await refreshPositions();
       } else {
         throw new Error(result.error || '提交失败');
       }
@@ -240,7 +234,7 @@ export default function Positions() {
   };
 
   /**
-   * 一键平仓所有仓位
+   * 一键平仓所有仓位 - 直接调用OKX API
    */
   const handleCloseAll = async () => {
     if (list.length === 0) {
@@ -249,71 +243,36 @@ export default function Positions() {
     }
     
     setClosingAll(true);
-    const successCount = { count: 0 };
-    const failCount = { count: 0 };
     
     try {
       message.loading({ content: `正在平仓 ${list.length} 个仓位...`, key: 'closeAll', duration: 0 });
       
-      // 并行平仓所有仓位
-      const promises = list.map(async (position) => {
-        try {
-          const action = position.side === 'long' ? 'CLOSE_LONG' : 'CLOSE_SHORT';
-          const decision = {
-            symbol: position.coin,
-            action,
-            confidence: 100,
-            reasoning: '一键平仓',
-          };
-          
-          const res = await fetch('/api/ai/execute-decision', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-              decision,
-              decisionId: `manual-close-${position.coin}-${Date.now()}`  // 🔧 手动平仓的临时ID
-            }),
-          });
-          
-          const result = await res.json();
-          
-          if (result.success) {
-            successCount.count++;
-          } else {
-            failCount.count++;
-            console.error(`[Positions] 平仓 ${position.coin} 失败:`, result.error);
-          }
-        } catch (err) {
-          failCount.count++;
-          console.error(`[Positions] 平仓 ${position.coin} 异常:`, err);
-        }
+      // 🔧 改为调用专用的批量平仓API（直接调用OKX）
+      const res = await fetch('/api/positions/close-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
       });
       
-      await Promise.all(promises);
+      const result = await res.json();
       
       // 显示结果
-      if (failCount.count === 0) {
+      if (result.success) {
         message.success({
-          content: `成功平仓 ${successCount.count} 个仓位`,
+          content: result.message,
           key: 'closeAll',
           duration: 3,
         });
-      } else if (successCount.count > 0) {
-        message.warning({
-          content: `成功 ${successCount.count} 个，失败 ${failCount.count} 个`,
-          key: 'closeAll',
-          duration: 5,
-        });
       } else {
         message.error({
-          content: `全部平仓失败`,
+          content: result.message || result.error,
           key: 'closeAll',
           duration: 5,
         });
       }
       
       // 刷新仓位数据
-      await fetchData();
+      await refreshPositions();
+      
     } catch (err: any) {
       message.error({
         content: `一键平仓失败: ${err.message}`,
@@ -336,7 +295,7 @@ export default function Positions() {
         <div style={{ marginBottom: 8, fontWeight: 'bold' }}>获取仓位失败</div>
         <div style={{ fontSize: 12, color: '#a1a9b7' }}>{error}</div>
         <div style={{ marginTop: 12 }}>
-          <Button size="small" onClick={fetchData}>重试</Button>
+          <Button size="small" onClick={refreshPositions}>重试</Button>
         </div>
       </div>
     );

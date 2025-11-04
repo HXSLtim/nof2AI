@@ -299,7 +299,12 @@ export default function DecisionHistory() {
               if (decision.action !== 'HOLD') {
                 // 交易决策 - 立即执行
                 const title = `${prefix} - ${decision.action} ${decision.symbol} (置信度: ${decision.confidence}%)`;
-                const desc = `${decision.reasoning}\n\n决策详情：\n- 操作: ${decision.action}\n- 币种: ${decision.symbol}\n- 杠杆: ${decision.leverage || 5}x\n- 仓位大小: $${decision.sizeUSDT} USDT`;
+                const positionSize = decision.positionSizePercent 
+                  ? `${decision.positionSizePercent}% 可用资金`
+                  : decision.sizeUSDT 
+                    ? `$${decision.sizeUSDT} USDT`
+                    : '系统自动计算';
+                const desc = `${decision.reasoning}\n\n决策详情：\n- 操作: ${decision.action}\n- 币种: ${decision.symbol}\n- 杠杆: ${decision.leverage || 5}x\n- 仓位大小: ${positionSize}\n- 止盈: ${decision.takeProfit || 'N/A'}\n- 止损: ${decision.stopLoss || 'N/A'}`;
                 
                 if (autoExecute) {
                   console.log(`[DecisionHistory] → 立即执行: ${decision.symbol} ${decision.action}`);
@@ -454,17 +459,27 @@ export default function DecisionHistory() {
         tradingCount++;
         // 发布交易决策
         const title = `${prefix} - ${parsedDecision.action} ${parsedDecision.symbol} (置信度: ${parsedDecision.confidence}%)`;
+        
+        // 格式化仓位大小显示
+        const positionSizeDisplay = parsedDecision.positionSizePercent 
+          ? `${parsedDecision.positionSizePercent}% 可用资金` 
+          : parsedDecision.sizeUSDT 
+            ? `$${parsedDecision.sizeUSDT} USDT` 
+            : parsedDecision.sizePercent 
+              ? `${parsedDecision.sizePercent}%` 
+              : '系统自动计算';
+        
         const desc = `
 ${parsedDecision.reasoning}
 
 决策详情：
 - 操作: ${parsedDecision.action}
 - 币种: ${parsedDecision.symbol}
+- 杠杆: ${parsedDecision.leverage || 5}x
+- 仓位大小: ${positionSizeDisplay}
 - 入场价: ${parsedDecision.entryPrice || '市价'}
 - 止盈: ${parsedDecision.takeProfit || 'N/A'}
 - 止损: ${parsedDecision.stopLoss || 'N/A'}
-- 杠杆: ${parsedDecision.leverage || 5}x
-- 仓位大小: ${parsedDecision.sizeUSDT ? `$${parsedDecision.sizeUSDT} USDT` : parsedDecision.sizePercent ? `${parsedDecision.sizePercent}%` : '系统自动计算'}
 - 时间框架: ${parsedDecision.timeframe || 'SHORT'}
         `.trim();
         

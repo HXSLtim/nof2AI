@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { AntdRegistry } from '@ant-design/nextjs-registry';
 import { ConfigProvider, App } from 'antd';
+import { DataProvider } from '@/contexts/DataContext';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -18,6 +19,18 @@ export default function RootLayout({
 }>) {
   // 在 Node 运行时异步启动所有调度器（动态导入，避免 Edge 构建引入 Node 依赖）
   if (typeof window === 'undefined') {
+    // 🚀 先初始化合约信息缓存
+    import('@/lib/okx-instruments')
+      .then(async (m) => {
+        console.log('[layout] 🔄 初始化合约信息缓存...');
+        await m.initInstrumentCache();
+        console.log('[layout] ✅ 合约信息缓存初始化完成');
+      })
+      .catch((e) => {
+        console.error('[layout] ⚠️ 合约信息初始化失败:', e);
+      });
+    
+    // 然后启动调度器
     import('@/lib/scheduler')
       .then((m) => {
         // 启动账户总金额采集（每1分钟）
@@ -44,7 +57,11 @@ export default function RootLayout({
            * @description 将主色（Primary）调整为绿色，以符合全局绿色主题视觉。
            */}
           <ConfigProvider theme={{ token: { colorPrimary: '#00e676', colorBgBase: '#0f1116', colorTextBase: '#ffffff' } }}>
-            <App>{children}</App>
+            <App>
+              <DataProvider autoRefresh={true}>
+                {children}
+              </DataProvider>
+            </App>
           </ConfigProvider>
         </AntdRegistry>
       </body>

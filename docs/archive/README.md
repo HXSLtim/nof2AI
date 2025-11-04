@@ -19,6 +19,21 @@
   - 原因: 临时文档，系统已稳定运行
   - 归档时间: 2025-11-04
 
+### 📦 临时文档（2025-11-04归档）
+- **[TEMP_DOCS_INDEX.md](./TEMP_DOCS_INDEX.md)** - 临时文档索引
+  - 记录了开发和调试过程中的临时文档
+  - 包含6个重构、修复和指导文档
+
+#### 🔄 重构相关文档
+- **[COMPLETE_REFACTOR_SUMMARY.md](./COMPLETE_REFACTOR_SUMMARY.md)** - 完整重构总结
+- **[FINAL_RESTART_GUIDE.md](./FINAL_RESTART_GUIDE.md)** - 最终重启指南
+- **[FINAL_COMPLETE_GUIDE.md](./FINAL_COMPLETE_GUIDE.md)** - 完整完成指南
+- **[CRITICAL_RESTART_NOW.md](./CRITICAL_RESTART_NOW.md)** - 紧急重启指令
+- **[README_REFACTOR_COMPLETE.md](./README_REFACTOR_COMPLETE.md)** - 重构完成说明
+
+#### 🔧 修复相关文档
+- **[FIX_50101_ERROR.md](./FIX_50101_ERROR.md)** - 50101错误修复记录
+
 ### 历史修复记录
 详细的修复记录已移动到 [../fixes/](../fixes/) 目录，这里保留了更早期的修复历史：
 

@@ -291,6 +291,91 @@ function generateMarketConditionsSnapshot(): string {
 }
 
 /**
+ * 调用AI服务进行深度反思分析
+ */
+async function callAIReflection(prompt: string): Promise<string> {
+  try {
+    // 读取 AI 服务配置（与 chat API 相同）
+    const baseUrl = process.env.AI_SERVICE_URL 
+      ?? process.env.OPENAI_BASE_URL 
+      ?? process.env.OPENAI_API_HOST 
+      ?? process.env.DEEPSEEK_API_BASE;
+      
+    const apiKey = process.env.AI_API_KEY 
+      ?? process.env.OPENAI_API_KEY 
+      ?? process.env.DEEPSEEK_API_KEY;
+      
+    const model = process.env.AI_MODEL_ID 
+      ?? process.env.OPENAI_MODEL_NAME 
+      ?? process.env.DEEPSEEK_MODEL_ID 
+      ?? 'deepseek-chat';
+
+    if (!baseUrl || !apiKey) {
+      console.warn('[trade-reflection] ⚠️ AI服务未配置，使用规则引擎');
+      return '';  // 返回空字符串，将使用规则引擎
+    }
+
+    // 构建endpoint
+    let endpoint = baseUrl;
+    try {
+      const u = new URL(baseUrl);
+      const p = u.pathname.replace(/\/+$/, '');
+      if (p.endsWith('/chat/completions')) {
+        endpoint = baseUrl;
+      } else if (/\/v1\/?$/.test(p)) {
+        endpoint = baseUrl.replace(/\/+$/, '') + '/chat/completions';
+      } else {
+        endpoint = baseUrl.replace(/\/+$/, '') + '/v1/chat/completions';
+      }
+    } catch {
+      endpoint = baseUrl.replace(/\/+$/, '') + '/v1/chat/completions';
+    }
+
+    // 调用AI
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'system',
+            content: '你是一个专业的加密货币交易分析师，擅长分析交易决策的优劣，总结经验教训。请用简洁、专业的中文回答，直击要点。'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: 0.7,
+        max_tokens: 800
+      }),
+    });
+
+    if (!response.ok) {
+      console.warn(`[trade-reflection] ⚠️ AI API调用失败: ${response.status}`);
+      return '';
+    }
+
+    const data = await response.json();
+    const content = data?.choices?.[0]?.message?.content;
+    
+    if (!content) {
+      console.warn('[trade-reflection] ⚠️ AI返回内容为空');
+      return '';
+    }
+
+    return content;
+  } catch (error) {
+    console.error('[trade-reflection] ❌ AI调用失败:', error);
+    return '';
+  }
+}
+
+/**
  * 生成AI反思分析
  * 分析交易结果，提取经验教训
  */
@@ -306,7 +391,79 @@ async function generateAIReflection(trade: TradeReflectionRow & {
   improvement: string;
   actualVsExpected: string;
 }> {
-  // 基础规则分析（未来可以调用GPT进行深度分析）
+  // 构建AI反思提示词
+  const prompt = `请分析以下加密货币交易，并提供专业的反思：
+
+【交易信息】
+- 币种：${trade.symbol}
+- 操作：${trade.action}
+- 入场价格：$${trade.entry_price?.toFixed(2) || '未知'}
+- 出场价格：$${trade.exit_price.toFixed(2)}
+- 杠杆：${trade.leverage}x
+- 置信度：${trade.confidence}%
+
+【决策理由】
+${trade.reasoning || '未记录'}
+
+【交易结果】
+- 盈亏金额：$${trade.pnl_amount.toFixed(2)}
+- 盈亏百分比：${trade.pnl_percentage.toFixed(2)}%
+- 持仓时间：${trade.holding_time_minutes}分钟
+- 最终结果：${trade.outcome === 'profit' ? '盈利✅' : trade.outcome === 'loss' ? '亏损❌' : '持平'}
+
+【市场条件】
+${trade.market_conditions || '未记录'}
+
+请从以下4个维度进行分析（每个维度1-2句话，简洁明了）：
+
+1. **错误分析**（mistakes）：这笔交易中有哪些明显的错误或不当决策？
+2. **经验总结**（insights）：从这笔交易中能学到什么？有什么值得记住的经验？
+3. **改进方向**（improvement）：下次类似情况应该如何改进？
+4. **预期对比**（actualVsExpected）：实际结果是否符合决策时的置信度预期？
+
+请严格按照以下JSON格式返回（不要包含markdown代码块标记）：
+{
+  "mistakes": "错误分析内容",
+  "insights": "经验总结内容",
+  "improvement": "改进方向内容",
+  "actualVsExpected": "预期对比内容"
+}`;
+
+  try {
+    // 尝试调用AI进行深度分析
+    console.log(`[trade-reflection] 🤖 调用AI进行深度反思...`);
+    const aiResponse = await callAIReflection(prompt);
+    
+    if (aiResponse) {
+      // 尝试解析AI返回的JSON
+      try {
+        // 清理可能的markdown代码块标记
+        let cleanResponse = aiResponse.trim();
+        if (cleanResponse.startsWith('```')) {
+          cleanResponse = cleanResponse.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+        }
+        
+        const parsed = JSON.parse(cleanResponse);
+        
+        if (parsed.mistakes && parsed.insights && parsed.improvement && parsed.actualVsExpected) {
+          console.log(`[trade-reflection] ✅ AI反思成功`);
+          return {
+            mistakes: parsed.mistakes,
+            insights: parsed.insights,
+            improvement: parsed.improvement,
+            actualVsExpected: parsed.actualVsExpected
+          };
+        }
+      } catch (parseError) {
+        console.warn('[trade-reflection] ⚠️ AI返回格式解析失败，使用规则引擎');
+      }
+    }
+  } catch (error) {
+    console.warn('[trade-reflection] ⚠️ AI反思失败，回退到规则引擎:', error);
+  }
+  
+  // 回退：使用规则引擎生成基础分析
+  console.log(`[trade-reflection] 📋 使用规则引擎生成反思`);
   const mistakes: string[] = [];
   const insights: string[] = [];
   const improvements: string[] = [];
