@@ -279,35 +279,67 @@ export async function POST(req: NextRequest) {
       // console.log('[execute-decision] 当前市价:', entryPrice); // ✅ 屏蔽
     }
     
-    // 不同币种的最大单笔订单金额限制（从 constants 导入）
-    const maxOrderForSymbol = MAX_ORDER_LIMITS[decision.symbol] || 500;
+    // 🔧 重构：基于百分比计算实际USDT金额
+    console.log(`\n[execute-decision] ========== 仓位计算开始 ==========`);
+    console.log(`[execute-decision] 可用资金: $${availableCash.toFixed(2)}`);
     
-    // 确定请求的订单金额 - 严格按AI指定
     let requestedUSDT = 0;
+    let positionPercent = 0;
     
-    if (decision.sizeUSDT && decision.sizeUSDT > 0) {
-      // AI指定了金额，严格使用（不擅自修改）
-      requestedUSDT = decision.sizeUSDT;
-      console.log(`[execute-decision] 💡 AI指定: $${decision.sizeUSDT}`);
+    // 优先使用position_size_percent（新格式）
+    if (decision.positionSizePercent && decision.positionSizePercent > 0) {
+      positionPercent = decision.positionSizePercent;
       
-      // 仅限制：不超过可用资金的90%
+      // 限制百分比范围：5-50%
+      if (positionPercent < 5) {
+        console.warn(`[execute-decision] ⚠️ 仓位百分比过小(${positionPercent}%)，调整为5%`);
+        positionPercent = 5;
+      } else if (positionPercent > 50) {
+        console.warn(`[execute-decision] ⚠️ 仓位百分比过大(${positionPercent}%)，限制为50%`);
+        positionPercent = 50;
+      }
+      
+      // 计算实际USDT金额 = 可用资金 × 百分比
+      requestedUSDT = availableCash * (positionPercent / 100);
+      
+      console.log(`[execute-decision] 💡 AI指定百分比: ${decision.positionSizePercent}%`);
+      console.log(`[execute-decision] 实际使用百分比: ${positionPercent}%`);
+      console.log(`[execute-decision] 计算金额: $${availableCash.toFixed(2)} × ${positionPercent}% = $${requestedUSDT.toFixed(2)}`);
+      
+    } else if (decision.sizeUSDT && decision.sizeUSDT > 0) {
+      // 兼容旧格式：直接指定USDT金额
+      requestedUSDT = decision.sizeUSDT;
+      positionPercent = availableCash > 0 ? (requestedUSDT / availableCash * 100) : 0;
+      
+      console.log(`[execute-decision] 💡 AI指定金额(旧格式): $${decision.sizeUSDT}`);
+      console.log(`[execute-decision] 相当于: ${positionPercent.toFixed(1)}% 可用资金`);
+      
+      // 限制：不超过可用资金的90%
       const maxUsable = availableCash * 0.9;
       if (requestedUSDT > maxUsable) {
         requestedUSDT = maxUsable;
+        positionPercent = 90;
         console.log(`[execute-decision] ⚠️ 限制为可用资金90%: $${requestedUSDT.toFixed(2)}`);
       }
+      
     } else {
-      // AI未提供金额，系统兜底自动计算
-      console.warn(`[execute-decision] ⚠️ AI未提供size_usdt，系统自动计算`);
-      
-      const conservative = Math.min(
-        availableCash * 0.3,  // 30%可用资金（保守）
-        maxOrderForSymbol
-      );
-      
-      requestedUSDT = conservative;
-      console.log(`[execute-decision] 系统计算: $${requestedUSDT.toFixed(2)} (30%可用资金)`);
+      // AI未提供任何金额信息，系统兜底
+      console.warn(`[execute-decision] ⚠️ AI未提供仓位大小，使用默认30%`);
+      positionPercent = 30;
+      requestedUSDT = availableCash * 0.3;
+      console.log(`[execute-decision] 系统默认: $${requestedUSDT.toFixed(2)} (30%可用资金)`);
     }
+    
+    // 检查最小金额要求
+    const MIN_ORDER_USDT = 5;  // 最小5u
+    if (requestedUSDT < MIN_ORDER_USDT) {
+      return NextResponse.json({
+        success: false,
+        error: `订单金额过小：$${requestedUSDT.toFixed(2)} < $${MIN_ORDER_USDT}最低要求。可用资金仅$${availableCash.toFixed(2)}，建议等待资金充足后再开仓。`
+      }, { status: 400 });
+    }
+    
+    console.log(`[execute-decision] ========== 仓位计算结束 ==========\n`);
     
     // === 使用保证金计算器精确计算 ===
     console.log(`\n[execute-decision] ========== 保证金计算开始 ==========`);
@@ -504,13 +536,19 @@ export async function POST(req: NextRequest) {
     
     console.log(`[execute-decision] 📊 记录开仓反思: ${decisionId}`);
     try {
+      // 创建反思记录时，附加实际使用的USDT金额
+      const decisionWithActualSize = {
+        ...decision,
+        sizeUSDT: requestedUSDT  // 保存实际使用的金额
+      };
+      
       recordTradeOpen({
         decisionId,
-        decision,
+        decision: decisionWithActualSize,
         entryPrice: actualEntryPrice,
-        marketConditions: `开仓时市价: $${actualEntryPrice}, 杠杆: ${leverage}x, 合约数: ${quantity}`
+        marketConditions: `开仓时市价: $${actualEntryPrice}, 杠杆: ${leverage}x, 合约数: ${quantity}, 仓位: ${positionPercent.toFixed(1)}%`
       });
-      console.log(`[execute-decision] ✅ 反思记录已创建`);
+      console.log(`[execute-decision] ✅ 反思记录已创建（仓位: ${positionPercent.toFixed(1)}%, 金额: $${requestedUSDT.toFixed(2)}）`);
     } catch (reflectionError) {
       console.error(`[execute-decision] ⚠️ 反思记录创建失败（不影响交易）:`, reflectionError);
       // 不影响交易执行，继续返回成功

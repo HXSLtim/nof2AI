@@ -49,7 +49,7 @@ export function recordTradeOpen(params: {
     entry_ts: Date.now(),
     confidence: decision.confidence || 0,
     leverage: decision.leverage || 1,
-    size_usdt: decision.sizeUSDT || 0,
+    size_usdt: decision.sizeUSDT || (decision.positionSizePercent ? 0 : 0),  // 向后兼容
     created_at: Date.now()
   };
   

@@ -26,7 +26,7 @@ FORMAT 1 - Single Decision:
   "action": "OPEN_LONG|OPEN_SHORT|CLOSE_LONG|CLOSE_SHORT|HOLD",
   "confidence": 0-100,
   "entry_price": number (optional, omit for market orders),
-  "size_usdt": number (REQUIRED for OPEN actions - USDT amount to use, see guidelines below),
+  "position_size_percent": number (REQUIRED for OPEN actions - percentage of available cash to use, 5-50),
   "take_profit": number (MANDATORY for OPEN actions - must provide),
   "stop_loss": number (MANDATORY for OPEN actions - must provide),
   "leverage": 1-10,
@@ -41,7 +41,7 @@ FORMAT 2 - Multiple Decisions (ONLY when you have multiple CLEAR opportunities):
       "symbol": "BTC",
       "action": "OPEN_LONG",
       "confidence": 75,
-      "size_usdt": 500,
+      "position_size_percent": 30,
       "take_profit": 112000,
       "stop_loss": 108500,
       "leverage": 5,
@@ -52,7 +52,7 @@ FORMAT 2 - Multiple Decisions (ONLY when you have multiple CLEAR opportunities):
       "symbol": "XRP",
       "action": "OPEN_SHORT",
       "confidence": 78,
-      "size_usdt": 300,
+      "position_size_percent": 20,
       "take_profit": 2.35,
       "stop_loss": 2.55,
       "leverage": 5,
@@ -67,35 +67,70 @@ FORMAT 2 - Multiple Decisions (ONLY when you have multiple CLEAR opportunities):
 - Focus on 1-3 best opportunities
 - Skip coins with unclear signals entirely
 
-POSITION SIZING GUIDELINES (size_usdt):
-⚠️ CRITICAL: Check "Available Cash" above - NEVER exceed it!
-⚠️ If Available Cash < $100, DO NOT open new positions (wait for existing to close)
+POSITION SIZING GUIDELINES (position_size_percent):
+⚠️ CRITICAL: Use PERCENTAGE of available cash, NOT absolute USDT amounts!
+⚠️ If Available Cash < $50, DO NOT open new positions (wait for existing to close)
 
-Recommended amounts (ONLY if you have sufficient cash):
-  * BTC (5-10x leverage): 300-1000 USDT
-  * ETH (5-10x leverage): 200-800 USDT  
-  * SOL/BNB (3-8x leverage): 150-600 USDT
-  * XRP/DOGE (3-8x leverage): 100-400 USDT
+PERCENTAGE-BASED SIZING (much better than fixed amounts):
+  * High Confidence (>80%): 30-40% of available cash
+  * Medium Confidence (70-80%): 20-30% of available cash
+  * Lower Confidence (65-70%): 10-20% of available cash
+  * Weak signals (<65%): DO NOT OPEN, choose HOLD
 
 STRICT RULES:
-- size_usdt MUST be <= Available Cash
-- If Available Cash is $50, maximum size_usdt is $45 (leave 10% buffer)
+- position_size_percent MUST be between 5-50 (represents 5%-50%)
+- Example: If Available Cash = $1000, position_size_percent=20 means $200
+- Example: If Available Cash = $10, position_size_percent=30 means $3
 - Total across all open positions should not exceed 80% of available cash
-- For CLOSE actions, size_usdt is not needed (closes entire position)
-- If cash is low, prefer HOLD over opening small positions
+- For CLOSE actions, position_size_percent is not needed (closes entire position)
+- System will automatically calculate actual USDT amount based on your percentage
 
 DECISION FORMAT:
 - If analyzing a SINGLE coin: Return FORMAT 1 (single decision object)
 - If analyzing MULTIPLE coins: Return FORMAT 2 (decisions array)
-- size_usdt is REQUIRED for all OPEN actions
-- ONLY make decisions with HIGH confidence (>=70%)
+- position_size_percent is REQUIRED for all OPEN actions (use 10-40 based on confidence)
+- ONLY make decisions with HIGH confidence (>=65%)
 - If signals are unclear or mixed, choose HOLD
+
+POSITION SIZE EXAMPLES:
+- Available Cash = $10, position_size_percent = 30 → System uses $3
+- Available Cash = $100, position_size_percent = 25 → System uses $25
+- Available Cash = $1000, position_size_percent = 40 → System uses $400
+This way, your decisions automatically scale with available funds!
+
+🎯 MULTI-STRATEGY ANALYSIS GUIDANCE:
+
+You now have access to MULTI-STRATEGY ANALYSIS for each coin, which includes:
+- Market Regime Detection (trending/ranging/volatile)
+- 4 Strategy Signals: Trend Following, Mean Reversion, Breakout, Momentum
+- Fused Signal with weighted confidence
+- Advanced Indicators: Bollinger Bands, ADX
+
+HOW TO USE MULTI-STRATEGY ANALYSIS:
+1. Check the FUSED SIGNAL first - it's the weighted combination of all strategies
+2. Consider the Market Regime:
+   - TRENDING: Trust trend-following signals more
+   - RANGING: Mean reversion signals are more reliable
+   - VOLATILE: Be more cautious, reduce position size
+3. Verify with Advanced Indicators:
+   - ADX > 25: Strong trend, trust directional signals
+   - ADX < 20: Weak trend, prefer ranging strategies
+   - Price ABOVE BB upper: Overbought, consider taking profits or shorting
+   - Price BELOW BB lower: Oversold, consider buying or closing shorts
+4. Signal Strength interpretation:
+   - >70: Very strong signal, high confidence
+   - 60-70: Good signal, moderate confidence
+   - 50-60: Weak signal, be cautious
+   - <50: No clear signal, prefer HOLD
+
+EXAMPLE: If you see "FUSED SIGNAL: LONG (confidence: 78)" with Market Regime "TRENDING UP" and ADX=32, this is a HIGH-QUALITY long opportunity.
 
 TRADING RULES TO PREVENT OVER-TRADING:
 
 1. OPENING POSITIONS (BOTH LONG AND SHORT):
    - Check "YOUR ACTIVE OPEN POSITIONS FROM PREVIOUS DECISIONS" section above
    - DO NOT open if you already have an active position for same symbol and direction
+   - CONSIDER the Multi-Strategy Fused Signal - only open if confidence >= 65
    
    LONG SIGNALS (OPEN_LONG):
    - Price > EMA20 (both 3m and 4H)
@@ -173,18 +208,20 @@ If you don't see a clear opportunity, respond with {"action": "HOLD", "symbol": 
 
 CRITICAL: 
 - Your response must be ONLY valid JSON, starting with { and ending with }
-- size_usdt is MANDATORY for all OPEN_LONG and OPEN_SHORT actions
-- Example: "size_usdt": 500 means use $500 USDT for this trade
+- position_size_percent is MANDATORY for all OPEN_LONG and OPEN_SHORT actions
+- Example: "position_size_percent": 25 means use 25% of available cash
 
-⚠️ AVAILABLE CASH RULES (EXTREMELY IMPORTANT):
-- ALWAYS check "Available Cash" in the data above
-- size_usdt MUST be <= Available Cash (leave 10% buffer)
-- Example: If Available Cash = $100, maximum size_usdt = $90
-- Example: If Available Cash = $50, maximum size_usdt = $45
-- Example: If Available Cash = $10, DO NOT open any positions (choose HOLD)
-- If cash is insufficient for your desired size_usdt, reduce it or choose HOLD
-- Recommended: use 20-50% of available cash per position
-- If available cash < $50, strongly prefer HOLD over opening tiny positions
+⚠️ PERCENTAGE-BASED POSITION SIZING (EXTREMELY IMPORTANT):
+- ALWAYS use percentage (5-50), NOT absolute USDT amounts!
+- position_size_percent will be automatically converted to USDT by the system
+- Example: If Available Cash = $10, position_size_percent = 30 → uses $3
+- Example: If Available Cash = $100, position_size_percent = 30 → uses $30
+- Example: If Available Cash = $1000, position_size_percent = 30 → uses $300
+- High confidence (>80%): 30-40%
+- Medium confidence (70-80%): 20-30%
+- Lower confidence (65-70%): 10-20%
+- If available cash < $50, you can still open with small percentages (system handles it)
+- Total of all position_size_percent across open positions should be < 80%
 
 ⚠️ TAKE PROFIT & STOP LOSS RULES (MANDATORY):
 - For ALL OPEN_LONG and OPEN_SHORT actions, you MUST provide BOTH take_profit AND stop_loss
@@ -215,8 +252,9 @@ export interface ParsedDecision {
   action: 'OPEN_LONG' | 'OPEN_SHORT' | 'CLOSE_LONG' | 'CLOSE_SHORT' | 'HOLD';
   confidence: number;
   entryPrice?: number;
-  sizePercent?: number;  // 保留兼容性
-  sizeUSDT?: number;     // 新增：直接指定USDT金额
+  positionSizePercent?: number;  // 主要使用：仓位百分比（5-50）
+  sizePercent?: number;  // 向后兼容
+  sizeUSDT?: number;     // 向后兼容
   takeProfit?: number;
   stopLoss?: number;
   leverage?: number;
@@ -252,6 +290,7 @@ export function parseDecisionsFromText(text: string, silent = false): ParsedDeci
       action: String(obj.action || 'HOLD').toUpperCase() as ParsedDecision['action'],
       confidence: typeof obj.confidence === 'number' ? obj.confidence : parseInt(String(obj.confidence || '50')),
       entryPrice: obj.entry_price ? parseFloat(String(obj.entry_price)) : undefined,
+      positionSizePercent: obj.position_size_percent ? parseFloat(String(obj.position_size_percent)) : undefined,
       sizePercent: obj.size_percent ? parseFloat(String(obj.size_percent)) : undefined,
       sizeUSDT: obj.size_usdt ? parseFloat(String(obj.size_usdt)) : undefined,
       takeProfit: obj.take_profit ? parseFloat(String(obj.take_profit)) : undefined,

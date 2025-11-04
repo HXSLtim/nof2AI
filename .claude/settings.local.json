@@ -14,7 +14,8 @@
       "Bash(npm run dev:*)",
       "Bash(curl:*)",
       "Bash(ConvertFrom-Json)",
-      "Bash(npx tsx:*)"
+      "Bash(npx tsx:*)",
+      "Bash(sqlite3:*)"
     ],
     "deny": [],
     "ask": []

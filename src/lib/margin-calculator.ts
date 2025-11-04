@@ -49,17 +49,17 @@ export interface MarginCalculation {
  * 
  * @param symbol 币种符号（如 'BTC', 'ETH'）
  * @param entryPrice 入场价格
- * @param sizeUSDT 期望的名义价值（USDT金额，不是保证金！）
+ * @param sizeUSDT 期望投入的USDT金额（保证金概念，会乘以杠杆得到名义价值）
  * @param leverage 杠杆倍数
  * @returns 保证金计算结果
  * 
  * @example
  * ```typescript
- * // 期望名义价值500 USDT，5x杠杆
- * const calc = calculateMarginRequirement('XRP', 2.5306, 500, 5);
- * console.log(`名义价值: $${calc.notionalValue}`); // 500
- * console.log(`所需保证金: $${calc.requiredMargin}`); // 100
- * console.log(`合约张数: ${calc.contractSize}`); // 197.58
+ * // 投入700 USDT保证金，5x杠杆
+ * const calc = calculateMarginRequirement('BTC', 107000, 700, 5);
+ * console.log(`保证金: $${calc.requiredMargin}`); // 700
+ * console.log(`名义价值: $${calc.notionalValue}`); // 3500
+ * console.log(`合约张数: ${calc.contractSize}`); // 0.0327
  * ```
  */
 export function calculateMarginRequirement(
@@ -68,20 +68,18 @@ export function calculateMarginRequirement(
   sizeUSDT: number,
   leverage: number
 ): MarginCalculation {
-  // 🔧 修复：sizeUSDT应该是名义价值，不是保证金！
-  // 1. sizeUSDT直接就是名义价值
-  const notionalValue = sizeUSDT;
+  // 🔧 正确理解：sizeUSDT = 投入的保证金金额
+  // 1. 计算名义价值 = 保证金 × 杠杆
+  const notionalValue = sizeUSDT * leverage;
   
-  // 2. 计算合约张数
-  // 公式: 合约张数 = 名义价值 / 价格
+  // 2. 计算合约张数 = 名义价值 / 价格
   const rawContractSize = notionalValue / entryPrice;
   
   // 3. OKX支持小数张数！保留8位小数精度（crypto标准）
   const contractSize = Math.round(rawContractSize * 100000000) / 100000000;
   
-  // 4. 计算所需保证金
-  // 公式: 保证金 = 名义价值 / 杠杆
-  const requiredMargin = notionalValue / leverage;
+  // 4. 所需保证金就是输入的sizeUSDT
+  const requiredMargin = sizeUSDT;
   
   // 5. 计算手续费
   // 开仓手续费 = 名义价值 × 手续费率
@@ -181,11 +179,11 @@ export function validateSufficientMargin(
 /**
  * 根据可用资金智能调整订单大小
  * 
- * 当请求的名义价值对应的保证金超过可用资金时，自动调整为安全的最大名义价值
+ * 当请求的保证金超过可用资金时，自动调整为安全的最大金额
  * 
  * @param symbol 币种符号
  * @param entryPrice 入场价格
- * @param requestedUSDT 请求的名义价值（USDT）
+ * @param requestedUSDT 请求的保证金金额（USDT）
  * @param leverage 杠杆倍数
  * @param availableUSDT 可用保证金（USDT）
  * @returns 调整后的计算结果，如果无法满足则返回null
@@ -249,9 +247,9 @@ export function formatMarginCalculation(calc: MarginCalculation, symbol: string,
   return `
 【保证金计算结果】
 币种: ${symbol}
-名义价值: $${calc.notionalValue.toFixed(2)} (输入)
-${leverageInfo}合约张数: ${calc.contractSize} 张
-所需保证金: $${calc.requiredMargin.toFixed(2)}
+投入保证金: $${calc.requiredMargin.toFixed(2)} (输入)
+${leverageInfo}名义价值: $${calc.notionalValue.toFixed(2)} (保证金 × 杠杆)
+合约张数: ${calc.contractSize} 张
 开仓手续费: $${calc.openFee.toFixed(4)}
 平仓手续费(预留): $${calc.closeFee.toFixed(4)}
 总手续费: $${calc.totalFees.toFixed(4)}

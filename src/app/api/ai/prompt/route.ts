@@ -5,6 +5,8 @@ import { ema, macd, rsi, atr, midPrices } from '@/lib/indicators';
 import { getSentimentIndicators, formatSentimentForPrompt } from '@/lib/sentiment';
 import { parseDecisionFromText } from '@/lib/ai-trading-prompt';
 import { SUPPORTED_COINS } from '@/lib/constants';
+import { bollingerBands, adx, calculateSignalStrength } from '@/lib/advanced-indicators';
+import { StrategyFusion, TrendFollowingStrategy, MeanReversionStrategy, BreakoutStrategy, MomentumStrategy } from '@/lib/trading-strategies';
 
 /**
  * 生成符合 README 模板的 AI 提示词
@@ -142,6 +144,111 @@ export async function GET(req: NextRequest) {
       // 资金费率使用科学计数法，便于与模板示例一致（如 1.25e-05）
       const fmtExp = (n: number) => (Number.isFinite(n) ? Number(n).toExponential(6) : '0');
 
+      // 🎯 计算高级指标
+      // 布林带
+      const bbValues = bollingerBands(mids, 20, 2);
+      const currentBB = bbValues.length > 0 ? bbValues[bbValues.length - 1] : null;
+      
+      // ADX趋势强度
+      const adxValues = adx(candles3m, 14);
+      const currentADX = adxValues.length > 0 ? adxValues[adxValues.length - 1] : null;
+      
+      // 📊 多策略信号分析
+      let multiStrategyText = '';
+      try {
+        // 检测市场状态
+        const marketRegime = StrategyFusion.detectMarketRegime({
+          prices: mids,
+          ema20: ema20_3m,
+          atr: atr3_4h,
+          adx: currentADX || undefined
+        });
+        
+        // 获取策略权重
+        const weights = StrategyFusion.allocateWeights(marketRegime);
+        
+        // 分析各策略信号
+        const trendSignal = TrendFollowingStrategy.analyze({
+          price: currentPrice,
+          ema20_3m,
+          ema20_4h,
+          macd_3m: macdHist_3m,
+          macd_4h: macdHist_4h,
+          adx: currentADX || undefined
+        });
+        
+        const meanReversionSignal = currentBB ? MeanReversionStrategy.analyze({
+          price: currentPrice,
+          bb: currentBB,
+          rsi: rsi14_3m[rsi14_3m.length - 1],
+          volume: volCurr,
+          avgVolume: volAvg20
+        }) : { action: 'NEUTRAL' as const, strength: 50, confidence: 50, reasoning: 'BB数据不足' };
+        
+        const high20 = Math.max(...mids.slice(-20));
+        const low20 = Math.min(...mids.slice(-20));
+        
+        const breakoutSignal = currentBB ? BreakoutStrategy.analyze({
+          price: currentPrice,
+          high20,
+          low20,
+          volume: volCurr,
+          avgVolume: volAvg20,
+          bb: currentBB
+        }) : { action: 'NEUTRAL' as const, strength: 50, confidence: 50, reasoning: 'BB数据不足' };
+        
+        const momentumSignal = MomentumStrategy.analyze({
+          price: currentPrice,
+          prices: mids,
+          rsi: rsi14_3m[rsi14_3m.length - 1],
+          macd: currentMacd,
+          volume: volCurr,
+          avgVolume: volAvg20
+        });
+        
+        // 融合信号
+        const fusedSignal = StrategyFusion.fuseSignals({
+          trendFollowing: trendSignal,
+          meanReversion: meanReversionSignal,
+          breakout: breakoutSignal,
+          momentum: momentumSignal
+        }, weights);
+        
+        // 综合信号强度
+        const signalStrength = calculateSignalStrength({
+          price: currentPrice,
+          ema20: currentEma20,
+          macd: currentMacd,
+          rsi: rsi14_3m[rsi14_3m.length - 1],
+          bb: currentBB || undefined,
+          adx: currentADX || undefined,
+          volume: volCurr,
+          avgVolume: volAvg20
+        });
+        
+        multiStrategyText = `\n\n🎯 MULTI-STRATEGY ANALYSIS FOR ${coin}:
+Market Regime: ${marketRegime.toUpperCase().replace('_', ' ')}
+Strategy Weights: Trend=${(weights.trendFollowing*100).toFixed(0)}% | MeanRev=${(weights.meanReversion*100).toFixed(0)}% | Breakout=${(weights.breakout*100).toFixed(0)}% | Momentum=${(weights.momentum*100).toFixed(0)}%
+
+Individual Strategies:
+  - Trend Following: ${trendSignal.action} (strength: ${trendSignal.strength.toFixed(0)})
+  - Mean Reversion: ${meanReversionSignal.action} (strength: ${meanReversionSignal.strength.toFixed(0)})
+  - Breakout: ${breakoutSignal.action} (strength: ${breakoutSignal.strength.toFixed(0)})
+  - Momentum: ${momentumSignal.action} (strength: ${momentumSignal.strength.toFixed(0)})
+
+FUSED SIGNAL: ${fusedSignal.action} (confidence: ${fusedSignal.confidence.toFixed(0)})
+Signal Strength: Long=${signalStrength.longStrength.toFixed(0)} | Short=${signalStrength.shortStrength.toFixed(0)} | Trend=${signalStrength.trend}
+Reasoning: ${fusedSignal.reasoning}
+
+Advanced Indicators:
+  - Bollinger Bands: ${currentBB ? `Upper=${fmt(currentBB.upper)}, Middle=${fmt(currentBB.middle)}, Lower=${fmt(currentBB.lower)}, Width=${currentBB.bandwidth.toFixed(2)}%` : 'N/A'}
+  - ADX (Trend Strength): ${currentADX ? currentADX.toFixed(2) + (currentADX > 25 ? ' (STRONG TREND)' : ' (weak trend)') : 'N/A'}
+  - Price vs BB: ${currentBB ? (currentPrice > currentBB.upper ? 'ABOVE upper (overbought)' : currentPrice < currentBB.lower ? 'BELOW lower (oversold)' : 'within bands') : 'N/A'}`;
+      } catch (error) {
+        console.warn(`[api/ai/prompt] 多策略分析失败 ${coin}:`, error);
+        multiStrategyText = '';
+      }
+
       const section = [
         `ALL ${coin} DATA`,
         `current_price = ${fmt(currentPrice)}, current_ema20 = ${fmt(currentEma20)}, current_macd = ${fmt(currentMacd)}, current_rsi (7 period) = ${fmt(currentRsi7)}`,
@@ -160,6 +267,7 @@ export async function GET(req: NextRequest) {
         `\nCurrent Volume: ${fmt(volCurr)} vs. Average Volume: ${fmt(volAvg20)}`,
         `\nMACD indicators: [${takeLastDesc(macdHist_4h).map(fmt).join(', ')}]`,
         `\nRSI indicators (14‑Period): [${takeLastDesc(rsi14_4h).map(fmt).join(', ')}]`,
+        multiStrategyText,
       ].join('\n');
 
       sections.push(section);
