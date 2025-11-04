@@ -29,13 +29,18 @@ let cachedData: CachedMarketData | null = null;
  * 获取市场数据（优先使用缓存）
  */
 export async function getMarketData(instIds: string[], forceRefresh = false): Promise<CachedMarketData> {
+  const startTime = Date.now();
   const now = Date.now();
   
   // 如果缓存有效且不强制刷新，返回缓存
   if (!forceRefresh && cachedData && (now - cachedData.timestamp) < CACHE_CONFIG.DATA_TTL) {
-    console.log('[DataCache] 使用缓存数据，缓存时长:', Math.floor((now - cachedData.timestamp) / 1000), '秒');
+    cacheStats.hits++;
+    console.log('[DataCache] ✅ 缓存命中，缓存时长:', Math.floor((now - cachedData.timestamp) / 1000), '秒', `(命中率: ${getCacheHitRate().toFixed(1)}%)`);
     return cachedData;
   }
+  
+  cacheStats.misses++;
+  console.log('[DataCache] ❌ 缓存失效，重新加载...');
   
   console.log('[DataCache] 刷新市场数据...');
   
@@ -144,9 +149,51 @@ export async function getMarketData(instIds: string[], forceRefresh = false): Pr
   
   // 更新缓存
   cachedData = data;
-  console.log('[DataCache] 数据已刷新，缓存时间:', new Date(now).toLocaleString());
+  
+  // 更新统计
+  cacheStats.refreshes++;
+  cacheStats.lastRefresh = now;
+  const loadTime = Date.now() - startTime;
+  cacheStats.avgLoadTime = cacheStats.avgLoadTime === 0 
+    ? loadTime 
+    : (cacheStats.avgLoadTime * 0.9 + loadTime * 0.1);  // 指数移动平均
+  
+  console.log('[DataCache] 数据已刷新', {
+    耗时: `${loadTime}ms`,
+    缓存时间: new Date(now).toLocaleString(),
+    命中率: `${getCacheHitRate().toFixed(1)}%`,
+    平均加载: `${cacheStats.avgLoadTime.toFixed(0)}ms`
+  });
   
   return data;
+}
+
+/**
+ * 获取缓存命中率
+ */
+export function getCacheHitRate(): number {
+  const total = cacheStats.hits + cacheStats.misses;
+  return total > 0 ? (cacheStats.hits / total) * 100 : 0;
+}
+
+/**
+ * 获取缓存统计信息
+ */
+export function getCacheStats(): CacheStats {
+  return { ...cacheStats };
+}
+
+/**
+ * 重置缓存统计
+ */
+export function resetCacheStats(): void {
+  cacheStats = {
+    hits: 0,
+    misses: 0,
+    refreshes: 0,
+    avgLoadTime: 0,
+    lastRefresh: 0
+  };
 }
 
 /**

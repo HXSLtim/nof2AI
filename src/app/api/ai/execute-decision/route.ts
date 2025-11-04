@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { placeOrder, fetchAvailableUSDT, fetchTickers, placeTPSL, setLeverage, fetchPositions } from '@/lib/okx';
+import { placeOrder, fetchAvailableUSDT, fetchTickers, placeTPSL, setLeverage, fetchPositions, fetchAccountTotal } from '@/lib/okx';
 import { ParsedDecision } from '@/lib/ai-trading-prompt';
 import { 
   calculateMarginRequirement, 
@@ -9,6 +9,7 @@ import {
 } from '@/lib/margin-calculator';
 import { MAX_ORDER_LIMITS } from '@/lib/constants';
 import { recordTradeOpen, recordTradeClose } from '@/lib/trade-reflection';
+import { PreTradeValidator } from '@/lib/risk-validator';
 
 /**
  * AI 决策执行 API
@@ -50,7 +51,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 获取账户信息
-    // const accountTotal = await fetchAccountTotal(); // ✅ 暂时不需要
+    const accountTotal = await fetchAccountTotal();
     const availableCash = await fetchAvailableUSDT();
     const currentPositions = await fetchPositions();
 
@@ -364,6 +365,38 @@ export async function POST(req: NextRequest) {
     
     console.log(`[execute-decision] ✅ 保证金验证通过`);
     console.log(`[execute-decision] ========== 保证金计算结束 ==========\n`);
+    
+    // 🔒 交易前风险验证
+    console.log(`[execute-decision] ========== 风险验证开始 ==========`);
+    const riskValidation = PreTradeValidator.validateTrade(
+      currentPositions,
+      decision,
+      accountTotal,
+      availableCash,
+      marginCalc.notionalValue
+    );
+    
+    console.log(PreTradeValidator.formatValidationResult(riskValidation));
+    console.log(`[execute-decision] ========== 风险验证结束 ==========\n`);
+    
+    // 如果风险检查不通过，拒绝交易
+    if (!riskValidation.isValid) {
+      console.error(`[execute-decision] ❌ 风险检查失败，拒绝交易`);
+      return NextResponse.json({
+        success: false,
+        error: '交易风险过高，已拒绝',
+        riskCheck: {
+          errors: riskValidation.errors,
+          warnings: riskValidation.warnings,
+          metrics: riskValidation.riskMetrics
+        }
+      }, { status: 400 });
+    }
+    
+    // 如果有警告，记录但继续执行
+    if (riskValidation.warnings.length > 0) {
+      console.warn(`[execute-decision] ⚠️ 存在${riskValidation.warnings.length}个风险警告，但仍可交易`);
+    }
     
     // 使用计算出的合约张数
     const quantity = marginCalc.contractSize;
